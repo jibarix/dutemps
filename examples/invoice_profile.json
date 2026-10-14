@@ -1,0 +1,85 @@
+{
+ "issuer": {
+  "name": "Sam Example",
+  "phone": "555-0100",
+  "email": "sam@example.com"
+ },
+ "client": {
+  "name": "Northwind Traders",
+  "address": [
+   "Northwind Traders, Inc.",
+   "100 Example Street",
+   "Springfield, ST 00000"
+  ],
+  "attn": "Accounts Payable",
+  "email": "ap@example.com"
+ },
+ "agreement": "Consulting Agreement 2026-01",
+ "terms": "Due within 30 days",
+ "intro": "Professional services for the period shown. Every line is listed with its description in the appendix.",
+ "rate": 100,
+ "max_hours": 40,
+ "remittance": [
+  "Please make checks payable to Sam Example.",
+  "For questions about this invoice, write to sam@example.com.",
+  "Please reference the invoice number on your remittance advice."
+ ],
+ "sections": [
+  {
+   "heading": "PROJECT WORK",
+   "key": "projects",
+   "groups": [
+    {
+     "label": "Website",
+     "subtotal": "Subtotal — Website",
+     "pairs": [
+      ["Website", "Design"],
+      ["Website", "Build"]
+     ]
+    },
+    {
+     "label": "Data warehouse",
+     "subtotal": "Subtotal — Data warehouse",
+     "pairs": [
+      ["Data Warehouse", "Modeling"],
+      ["Data Warehouse", "Pipelines"]
+     ]
+    }
+   ]
+  },
+  {
+   "heading": "SUPPORT",
+   "key": "support",
+   "intro": "Questions, fixes and small changes under the support plan.",
+   "subtotal": "Subtotal — Support",
+   "pairs": [
+    ["Support", ""]
+   ]
+  },
+  {
+   "heading": "TRAINING",
+   "key": "training",
+   "subtotal": "Subtotal — Training",
+   "pairs": [
+    ["Training", "Workshops"]
+   ]
+  }
+ ],
+ "credits": [
+  {
+   "label": "Less: Returning-client discount on Website ({pct}%)",
+   "pct": 10,
+   "scope": {"project": "Website"}
+  },
+  {
+   "label": "Less: Support plan credit ({pct}%)",
+   "pct": 50,
+   "scope": {"section": "support"}
+  }
+ ],
+ "credit_note": {
+  "head": "About the credits",
+  "text": "The returning-client discount applies to website work. Support hours are credited under the support plan; the percentage can change from one invoice to the next."
+ },
+ "retainer_label": "Less: Retainer Fee Paid on {date}"
+}

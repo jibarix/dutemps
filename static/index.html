@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DuTemps</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<aside class="side" aria-label="Main navigation">
+  <div class="brand">DuTemps</div>
+  <nav>
+    <a href="#/tracker" data-page="tracker">Time Tracker</a>
+    <a href="#/timesheet" data-page="timesheet">Timesheet</a>
+    <a href="#/calendar" data-page="calendar">Calendar</a>
+    <div class="navhead">Analyze</div>
+    <a href="#/dashboard" data-page="dashboard">Dashboard</a>
+    <a href="#/reports" data-page="reports">Reports</a>
+    <div class="navhead">Billing</div>
+    <a href="#/invoices" data-page="invoices">Invoices</a>
+    <div class="navhead">Manage</div>
+    <a href="#/projects" data-page="projects">Projects</a>
+    <a href="#/clients" data-page="clients">Clients</a>
+    <a href="#/tags" data-page="tags">Tags</a>
+    <a href="#/settings" data-page="settings">Settings</a>
+  </nav>
+  <div class="side-foot" id="side-running" aria-live="polite"></div>
+</aside>
+<main id="main" tabindex="-1">
+  <div id="page"></div>
+</main>
+<div id="toasts" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

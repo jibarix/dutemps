@@ -1,0 +1,28 @@
+# Your records: the database, backups, imports, invoice settings and PDFs.
+/data/
+/scratch/
+backups/
+imports/
+invoice_profile*.json
+!/examples/invoice_profile.json
+*.db
+*.db-shm
+*.db-wal
+
+# Private notes and tests that use your own data (see AGENTS.md).
+/local/
+
+# Secrets
+.env
+.env.*
+*.env
+
+__pycache__/
+*.py[cod]
+*.bak
+*.bak-*
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
