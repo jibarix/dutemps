@@ -798,7 +798,7 @@ async function pageCalendar(root, params) {
       for (const x of segs) {
         const top = secsBetween(dayStart, x.s) / 3600 * PX, hgt = Math.max(14, secsBetween(x.s, x.en) / 3600 * PX);
         const p = proj(x.e.project_id);
-        const blk = h("div", { class: "blk" + (x.e.end_utc ? "" : " run"), tabindex: "0", role: "button",
+        const blk = h("div", { class: "blk" + (x.e.end_utc ? "" : " run") + (hgt < 34 ? " short" : hgt >= 52 ? " tall" : ""), tabindex: "0", role: "button",
           style: { top: top + "px", height: hgt + "px", background: p ? p.color : "#a1a1aa",
             left: `calc(${(x.lane / n) * 100}% + 2px)`, width: `calc(${100 / n}% - 4px)`, right: "auto" },
           title: `${x.e.description || "(no description)"}\n${p ? p.name : "No project"}${x.e.task ? ": " + x.e.task : ""}\n${timeOf(x.e.start_utc)} – ${x.e.end_utc ? timeOf(x.e.end_utc) : "running"} (${hms(x.e.seconds)})` },
@@ -852,20 +852,33 @@ async function pageCalendar(root, params) {
 }
 
 // ---------------------------------------------------------------- charts
+// Drawn at the box's real size, so it fills its card without stretching text.
 function barChart(buckets, values, colors, opts = {}) {
-  const W = opts.width || 760, H = opts.height || 220, L = 40, B = 24, T = 10;
+  const box = h("div", { class: "chart" });
+  let last = "";
+  new ResizeObserver(() => {
+    const W = box.clientWidth, H = box.clientHeight;
+    if (!W || !H || last === W + "x" + H) return;
+    last = W + "x" + H;
+    box.replaceChildren(barSvg(buckets, values, colors, opts, W, H));
+  }).observe(box);
+  return box;
+}
+
+function barSvg(buckets, values, colors, opts, W, H) {
+  const L = 40, B = 26, T = 12;
   const totals = buckets.map((b) => Object.values(values[b] || {}).reduce((a, x) => a + x, 0));
   const maxH = Math.max(1, ...totals.map((s) => s / 3600));
   const step = maxH <= 4 ? 1 : maxH <= 10 ? 2 : maxH <= 24 ? 4 : Math.ceil(maxH / 6 / 5) * 5;
   const top = Math.ceil(maxH / step) * step;
   const bw = (W - L - 10) / buckets.length;
   const y = (hrs) => T + (H - T - B) * (1 - hrs / top);
-  const svg = h("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img", "aria-label": opts.label || "Hours chart" });
+  const svg = h("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": opts.label || "Hours chart" });
   for (let v = 0; v <= top; v += step) {
     svg.append(h("line", { x1: L, x2: W - 6, y1: y(v), y2: y(v), stroke: "#f0f0f1" }),
       h("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, v + "h"));
   }
-  const every = Math.ceil(buckets.length / 16);
+  const every = Math.ceil(buckets.length / Math.max(2, Math.floor((W - L) / 56)));
   buckets.forEach((b, i) => {
     let acc = 0;
     const x = L + i * bw + bw * 0.15, w = bw * 0.7;

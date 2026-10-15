@@ -146,6 +146,8 @@ input:disabled, textarea:disabled, select:disabled { background-color: var(--sof
 .tagbtn.has { color: var(--text); }
 .tagbtn svg { display: inline-block; width: 16px; height: 16px; vertical-align: -3px; color: var(--deco); }
 .tagbtn:hover svg { color: var(--text); }
+/* a fixed slot, so project labels line up whether or not a row has tags */
+.entry .tagbtn { flex: none; width: 96px; text-align: center; }
 
 /* popover */
 .pop { position: fixed; z-index: 50; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 4px;
@@ -221,6 +223,9 @@ table.t.ts td:last-child:not(:first-child), table.t.ts th:last-child:not(:first-
 .cal-col .slot { height: 48px; border-bottom: 1px solid var(--line-soft); }
 .blk { position: absolute; left: 3px; right: 3px; border-radius: 6px; padding: 3px 6px; font-size: 11px; color: #fff; overflow: hidden;
   cursor: pointer; box-shadow: inset 0 0 0 1px #0000001a; line-height: 1.3; }
+.blk > b, .blk > div { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blk.short > div { display: none; }
+.blk.tall > b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
 .blk:focus-visible { outline: 2px solid var(--text); }
 .blk.ghost { background: #18181b14; box-shadow: inset 0 0 0 1px var(--deco); pointer-events: none; }
 .blk.run { background-image: repeating-linear-gradient(45deg, #fff3 0 6px, transparent 6px 12px); box-shadow: inset 0 0 0 2px var(--live); }
@@ -234,7 +239,10 @@ table.t.ts td:last-child:not(:first-child), table.t.ts th:last-child:not(:first-
 .card .muted { font-size: 13px; }
 .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
 .grid2 > .panel { display: flex; flex-direction: column; }
-.grid2 > .panel > svg { flex: 1 1 auto; min-height: 0; }
+.chart { position: relative; height: 240px; }
+.chart > svg { position: absolute; inset: 0; }
+.chart text { font-size: 12px; }
+.grid2 > .panel > .chart { flex: 1 1 auto; height: auto; min-height: 240px; }
 .grid2 > .panel > h2 { margin-top: 0; }
 @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
 svg text { font-family: inherit; font-size: 11px; fill: var(--faint); }

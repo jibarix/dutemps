@@ -25,7 +25,7 @@ from dutemps import core, db, importers, invoices, pdf, server  # noqa: E402
 SAMPLE_CSV = os.path.join(HERE, "tests", "fixtures", "sample_month.csv")
 
 # The sample month: 71.25 h at $100 (tests/test_core.py checks it line by
-# line). Website 33.25 h, Support 13.75 h, Data warehouse 24.25 h.
+# line). Website 33.25 h, Support 13.75 h, Data Warehouse 24.25 h.
 SEPT = {"number": "NW-2026-09", "issued": "2026-10-05", "period_from": "2026-09-01",
         "period_to": "2026-09-30", "retainer": 500, "retainer_date": "2026-09-30",
         "credit_pcts": [10, 50]}

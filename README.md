@@ -5,6 +5,8 @@ freelancer or consultant needs from a time tracker: a timer, a timesheet,
 reports and exports. It also issues the monthly invoice, and runs entirely on
 your own computer.
 
+![The time tracker, with a timer running above this week's entries](docs/images/tracker.png)
+
 - **Tracker:** a live timer that survives restarts, manual entries, duplicate,
   continue and bulk delete.
 - **Timesheet and Calendar:** a week grid (type hours into a cell to create an
@@ -22,6 +24,23 @@ your own computer.
   be restored from it.
 
 No account, no cloud, and no packages beyond Python's standard library.
+
+The screenshots show made-up demo data.
+
+![The dashboard: totals for today, the week and the month, hours by day and by project](docs/images/dashboard.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/calendar.png" alt="The week calendar, one coloured block per entry"></td>
+    <td width="50%"><img src="docs/images/timesheet.png" alt="The timesheet: hours per project and task for each day of the week"></td>
+  </tr>
+  <tr>
+    <td align="center">Calendar</td>
+    <td align="center">Timesheet</td>
+  </tr>
+</table>
+
+![The summary report with filters, hours by day and a breakdown by project](docs/images/reports.png)
 
 ## Run it
 
@@ -101,6 +120,19 @@ a new one issued.
 
 The monthly maximum and "additional amount authorized" rows come from
 `max_hours` in the profile.
+
+![A draft invoice: the form on the left, the billing summary on the right](docs/images/invoice.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/invoice-pdf.png" alt="Page 1 of the invoice PDF: totals, charts and the billing summary"></td>
+    <td width="50%"><img src="docs/images/invoice-appendix.png" alt="The appendix of the invoice PDF: every line with its date and description"></td>
+  </tr>
+  <tr>
+    <td align="center">The PDF: summary page</td>
+    <td align="center">The PDF: appendix</td>
+  </tr>
+</table>
 
 ## Your data
 

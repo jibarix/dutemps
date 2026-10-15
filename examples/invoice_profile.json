@@ -38,8 +38,8 @@
      ]
     },
     {
-     "label": "Data warehouse",
-     "subtotal": "Subtotal — Data warehouse",
+     "label": "Data Warehouse",
+     "subtotal": "Subtotal — Data Warehouse",
      "pairs": [
       ["Data Warehouse", "Modeling"],
       ["Data Warehouse", "Pipelines"]

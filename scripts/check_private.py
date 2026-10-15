@@ -7,7 +7,9 @@
 Blocked always: anything under data/, local/, scratch/, backups/ or imports/,
 invoice profiles, databases, .env files, PDFs and spreadsheets. Blocked when listed: the terms in local/private-terms.txt, one per
 line (whole words, case-insensitive; '#' starts a comment). Files that aren't
-UTF-8, UTF-16 or UTF-32 text can't be read, so they are refused. Put your name, email,
+UTF-8, UTF-16 or UTF-32 text can't be read, so they are refused, except PNG
+screenshots in docs/images/ that hold nothing but pixels (no text chunks): look
+at those yourself before committing them. Put your name, email,
 phone, clients and anything else that should never leave your machine there.
 The file itself is ignored by git.
 """
@@ -22,6 +24,8 @@ BLOCKED = re.compile(r"(^|/)(data|local|scratch|backups|imports)/|(^|/)invoice_p
                      r"|(^|/)\.env(\.[^/]*)?$", re.I)
 ALLOWED = {"tests/fixtures/sample_month.csv", "examples/invoice_profile.json"}
 HOOK = "#!/bin/sh\nexec python scripts/check_private.py\n"
+IMAGES = re.compile(r"^docs/images/[^/]+\.png$", re.I)
+PIXEL_CHUNKS = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND", b"gAMA", b"cHRM", b"sRGB", b"pHYs", b"sBIT"}
 
 
 def git(*args):
@@ -58,6 +62,22 @@ def versions(path, all_files):
         if not out or disk != out[0][1]:
             out.append(("working copy", disk))
     return out
+
+
+def pixels_only(data):
+    """True for a well-formed PNG with no chunks beyond the image itself, so
+    no text, EXIF or ICC profile can ride along."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    i = 8
+    while i + 8 <= len(data):
+        size, kind = int.from_bytes(data[i:i + 4], "big"), data[i + 4:i + 8]
+        if kind not in PIXEL_CHUNKS:
+            return False
+        i += 12 + size
+        if kind == b"IEND":
+            return i == len(data)
+    return False
 
 
 def text(data):
@@ -115,6 +135,8 @@ def main(argv):
         if pat and pat.search(path):
             problems.append(f"{path}: file name matches a private term")
         for which, raw in versions(path, all_files):
+            if IMAGES.match(path) and pixels_only(raw):
+                continue
             data = text(raw)
             if data is None:
                 problems.append(f"{path} ({which}): binary or not UTF-8/16/32 text, "

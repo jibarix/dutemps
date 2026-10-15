@@ -81,6 +81,22 @@ class Index(unittest.TestCase):
         self.git("add", "blob.bin")
         self.assertEqual(self.check(), 1)
 
+    def test_screenshots_must_be_bare_pngs_in_docs_images(self):
+        def chunk(kind, body=b""):
+            return len(body).to_bytes(4, "big") + kind + body + b"\0\0\0\0"
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", bytes(13)) + chunk(b"IDAT", b"x")
+        os.makedirs(os.path.join(self.dir, "docs", "images"))
+        self.write("docs/images/ok.png", png + chunk(b"IEND"))
+        self.git("add", "docs/images/ok.png")
+        self.assertEqual(self.check(), 0)
+        for name, data in (("docs/images/text.png", png + chunk(b"tEXt", b"Author\0Zorblax") + chunk(b"IEND")),
+                           ("docs/images/tail.png", png + chunk(b"IEND") + b"Zorblax"),
+                           ("elsewhere.png", png + chunk(b"IEND"))):
+            self.write(name, data)
+            self.git("add", name)
+            self.assertEqual(self.check(), 1, name)
+            self.git("rm", "-q", "--cached", name)
+
     def test_env_variants_are_refused(self):
         self.write(".env.local", b"KEY=1\n")
         self.git("add", "-f", ".env.local")
