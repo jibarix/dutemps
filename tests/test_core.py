@@ -185,6 +185,15 @@ class Timer(unittest.TestCase):
         self.assertEqual((c["description"], c["project_id"]), ("x", p["id"]))
         self.assertTrue(c["running"])
 
+    def test_long_description_keeps_its_lines(self):
+        con = fresh()
+        text = "Header sentence " + "word " * 60 + "\n- first point\n- second point"
+        e = core.create_entry(con, {"description": text, "start_utc": "2026-10-14T12:00:00Z",
+                                    "end_utc": "2026-10-14T13:00:00Z"})
+        self.assertEqual(e["description"], text.strip())
+        e = core.update_entry(con, e["id"], {"description": "  " + text + "\n- third\n "})
+        self.assertEqual(e["description"], text.strip() + "\n- third")
+
 
 class Rates(unittest.TestCase):
     def test_chain_entry_task_project_client_default(self):

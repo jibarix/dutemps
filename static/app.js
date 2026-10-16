@@ -367,7 +367,7 @@ function renderSideRunning() {
   const r = S.running;
   el.replaceChildren(r ? h("div", {}, h("div", { class: "run" }, h("span", { class: "live-dot" }), "Running",
     h("b", { id: "side-clock" }, hms(secsBetween(r.start_utc, nowUtc())))),
-    h("div", { class: "muted" }, r.description || r.project || "(no description)")) : "");
+    h("div", { class: "muted", title: r.description || null }, r.description || r.project || "(no description)")) : "");
 }
 setInterval(() => {
   if (!S.running) { document.title = "DuTemps"; return; }
@@ -376,6 +376,19 @@ setInterval(() => {
   const a = $("#side-clock"); if (a) a.textContent = t;
   const b = $("#bar-clock"); if (b) b.textContent = t;
 }, 1000);
+
+// ---------------------------------------------------------------- description field
+/** Textarea for a description that grows with its text. Enter calls onEnter; Shift+Enter adds a line. */
+function descArea(value, attrs, onEnter) {
+  const t = h("textarea", { rows: 1, ...attrs, value });
+  const fit = () => { t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; };
+  t.addEventListener("input", fit);
+  t.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); onEnter(); }
+  });
+  t.fit = fit;
+  return t;
+}
 
 // ---------------------------------------------------------------- entry dialog
 /** Create (e = defaults without id) or edit (e.id) an entry. Resolves true on save. */
@@ -387,7 +400,7 @@ function entryDialog(e, onSaved) {
   let pid = e.project_id || null, tid = e.task_id || null, tagIds = (e.tags || []).map((t) => t.id);
   let billable = e.billable === undefined ? 1 : e.billable;
   const f = {
-    desc: h("input", { value: e.description || "", placeholder: "What did you work on?" }),
+    desc: descArea(e.description || "", { class: "desc-edit", placeholder: "What did you work on?" }, () => f.desc.form.requestSubmit()),
     date: h("input", { type: "date", value: st ? st.date : todayLocal() }),
     start: h("input", { class: "time", value: st ? clock(st.h, st.m) : "" }),
     end: h("input", { class: "time", value: en ? clock(en.h, en.m) : "", disabled: running }),
@@ -452,7 +465,7 @@ function entryDialog(e, onSaved) {
   };
   dlg.append(h("form", { onsubmit: save },
     h("h2", {}, isNew ? "Add time entry" : running ? "Edit running entry" : "Edit time entry"),
-    h("label", { class: "f" }, "Description", f.desc),
+    h("label", { class: "f" }, "Description", f.desc, h("span", { class: "hint" }, "Shift+Enter starts a new line.")),
     h("div", { class: "row" }, chipBox, tagBox, billBox),
     h("div", { class: "grid" },
       h("label", { class: "f" }, "Date", f.date),
@@ -470,7 +483,8 @@ function entryDialog(e, onSaved) {
   dlg.addEventListener("close", () => dlg.remove());
   document.body.append(dlg);
   dlg.showModal();
-  (isNew && !e.description ? f.desc : f.desc).focus();
+  f.desc.fit();
+  f.desc.focus();
 }
 
 async function deleteEntries(ids) {
@@ -494,13 +508,20 @@ function timerBar(onChange) {
     const st = { description: cur ? cur.description : bar._desc || "", project_id: cur ? cur.project_id : bar._pid || null,
       task_id: cur ? cur.task_id : bar._tid || null, tags: cur ? cur.tags : (bar._tags || []),
       billable: cur ? cur.billable : (bar._bill ?? 1) };
-    const desc = h("input", { class: "desc", value: st.description, placeholder: "What are you working on?",
-      "aria-label": "Description", autocomplete: "off" });
+    const multi = st.description.includes("\n");
+    const desc = h("input", { class: "desc", value: st.description.replace(/\s*\n\s*/g, " "), placeholder: "What are you working on?",
+      "aria-label": "Description", autocomplete: "off", title: multi ? st.description : null });
     const patchRunning = async (body) => {
       try { S.running = await api("PATCH", `/api/entries/${cur.id}`, body); renderSideRunning(); paint(); } catch (e) { fail(e); }
     };
+    // a running entry with several lines is edited in the dialog, so its line breaks survive
+    if (cur && multi) {
+      desc.readOnly = true;
+      desc.addEventListener("click", () => entryDialog(cur, (out) => { if (out) { S.running = out; renderSideRunning(); paint(); } }));
+      desc.addEventListener("keydown", (e) => { if (e.key === "Enter") desc.click(); });
+    }
     desc.addEventListener("change", () => { if (cur) patchRunning({ description: desc.value }); else bar._desc = desc.value; });
-    desc.addEventListener("keydown", (e) => { if (e.key === "Enter" && !cur && !manual) { bar._desc = desc.value; start(); } });
+    desc.addEventListener("keydown", (e) => { if (e.key === "Enter" && !cur && !manual) start(); });
     desc.addEventListener("input", () => { bar._desc = desc.value; if (!cur) suggest(desc); });
     const chip = projectChip(st.project_id, st.task_id, (v) => {
       if (cur) patchRunning(v);
@@ -586,7 +607,7 @@ async function startFrom(e) {
 // ---------------------------------------------------------------- tracker
 async function pageTracker(root) {
   let entries = [], count = 0, totals = { days: {}, weeks: {} };
-  const selected = new Set();
+  const selected = new Set(), expanded = new Set();
   const list = h("div");
   const bulk = h("div");
   const bar = timerBar(() => load(true));
@@ -594,7 +615,7 @@ async function pageTracker(root) {
 
   async function load(reset) {
     const off = reset ? 0 : entries.length;
-    const r = await GET("/api/entries", { limit: 60, offset: off, totals: 1 });
+    const r = await GET("/api/entries", { limit: 300, offset: off, totals: 1 });
     entries = reset ? r.entries : entries.concat(r.entries);
     count = r.count;
     totals = reset ? r.totals : { days: { ...totals.days, ...r.totals.days }, weeks: { ...totals.weeks, ...r.totals.weeks } };
@@ -627,22 +648,107 @@ async function pageTracker(root) {
         const dtot = totals.days[d] || 0;
         const all = h("input", { type: "checkbox", "aria-label": `Select all on ${d}`, checked: es.every((e) => selected.has(e.id)),
           onchange: () => { es.forEach((e) => all.checked ? selected.add(e.id) : selected.delete(e.id)); paint(); } });
+        const rows = [];
+        for (const g of groupSimilar(es)) {
+          if (g.length === 1) { rows.push(entryRow(g[0])); continue; }
+          const k = d + "|" + similarKey(g[0]);
+          rows.push(groupRow(g, k));
+          if (expanded.has(k)) rows.push(...g.map((e) => entryRow(e, true)));
+        }
         list.append(h("div", { class: "panel day" },
-          h("div", { class: "day-head" }, all, h("span", {}, dayLabel(d)), h("span", { class: "tot" }, "Total: " + dur(dtot))),
-          es.map((e) => entryRow(e))));
+          h("div", { class: "day-head" }, all, h("span", {}, dayLabel(d)), h("span", { class: "tot" }, "Total: " + dur(dtot))), rows));
       }
     }
     if (entries.length < count) list.append(h("button", { class: "more", onclick: () => load(false) }, `Load more (${count - entries.length} older)`));
   }
-  function entryRow(e) {
+  // Entries of one day with the same description, project, task, tags and
+  // billable flag show as one row, like an invoice line; it expands to the entries.
+  function similarKey(e) {
+    return [e.description, e.project_id || 0, e.task_id || 0, e.billable ? 1 : 0,
+      e.tags.map((t) => t.id).sort().join(",")].join("\u0001");
+  }
+  function groupSimilar(es) {
+    const m = new Map();
+    for (const e of es) {
+      const k = similarKey(e);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(e);
+    }
+    return [...m.values()];
+  }
+  /** The description: wrapped text that turns into a growing box on click.
+      onSave(newText) runs on Enter or blur when the text changed; Escape cancels. */
+  function descCell(text, onSave) {
+    const cell = h("div", { class: "desc-cell" });
+    const view = () => h("div", { class: "desc view" + (text ? "" : " blank"), tabindex: 0, role: "button",
+      "aria-label": "Edit description", onclick: edit,
+      onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); edit(); } } },
+      text || "Add description");
+    function edit() {
+      let done = false;
+      const t = descArea(text, { class: "bare desc", placeholder: "Add description", "aria-label": "Description" }, () => t.blur());
+      const finish = (save) => {
+        if (done) return;
+        done = true;
+        const v = t.value.trim();
+        const changed = save && v !== text;
+        if (changed) text = v;
+        const back = view();
+        cell.replaceChildren(back);
+        if (!save) back.focus();
+        if (changed) onSave(v);
+      };
+      t.addEventListener("blur", () => finish(true));
+      t.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); finish(false); } });
+      cell.replaceChildren(t);
+      t.fit();
+      t.focus();
+      t.setSelectionRange(t.value.length, t.value.length);
+    }
+    cell.append(view());
+    return cell;
+  }
+  async function patchAll(ids, body) {
+    try { for (const id of ids) await api("PATCH", `/api/entries/${id}`, body); } catch (x) { fail(x); }
+    load(true);
+  }
+  function groupRow(g, k) {
+    const ids = g.map((e) => e.id), e = g[0];
+    const open = expanded.has(k);
+    const cb = h("input", { type: "checkbox", "aria-label": `Select ${g.length} entries`, checked: ids.every((i) => selected.has(i)),
+      onchange: () => { ids.forEach((i) => cb.checked ? selected.add(i) : selected.delete(i)); paint(); } });
+    const toggle = () => { open ? expanded.delete(k) : expanded.add(k); paint(); };
+    const n = h("button", { class: "count" + (open ? " open" : ""), type: "button", "aria-expanded": open ? "true" : "false",
+      title: open ? "Hide the entries" : `Show the ${g.length} entries`, onclick: toggle }, String(g.length));
+    const first = g.reduce((a, x) => x.start_utc < a ? x.start_utc : a, g[0].start_utc);
+    const last = g.reduce((a, x) => x.end_utc > a ? x.end_utc : a, g[0].end_utc);
+    const sp = parts(first), ep = parts(last);
+    const more = h("button", { class: "icon", title: "More actions", "aria-label": "More actions", "data-popper": "1" }, ico("more"));
+    more.addEventListener("click", () => menu(more, [
+      { label: open ? "Hide entries" : "Show entries", fn: toggle },
+      { label: `Delete all ${g.length}`, fn: async () => { await deleteEntries(ids); ids.forEach((i) => selected.delete(i)); load(true); } },
+    ]));
+    return h("div", { class: "entry group" + (ids.every((i) => selected.has(i)) ? " sel" : "") }, cb, n,
+      h("div", { class: "main" },
+        descCell(e.description, (v) => patchAll(ids, { description: v })),
+        h("div", { class: "meta" },
+          projectChip(e.project_id, e.task_id, (v) => patchAll(ids, v)),
+          tagButton(e.tags, (tagIds) => patchAll(ids, { tag_ids: tagIds })))),
+      dollar(e.billable, (v) => patchAll(ids, { billable: v })),
+      h("div", { class: "sep" }),
+      h("div", { class: "times span", title: `${g.length} entries between these times` },
+        h("span", {}, clock(sp.h, sp.m)), h("span", { class: "muted" }, "–"), h("span", {}, clock(ep.h, ep.m))),
+      h("div", { class: "sep" }),
+      h("span", { class: "dur" }, dur(g.reduce((a, x) => a + x.seconds, 0))),
+      h("button", { class: "icon", title: "Continue this entry", "aria-label": "Continue this entry", onclick: () => startFrom(e) }, ico("play")),
+      more);
+  }
+  function entryRow(e, child) {
     const patch = async (body) => {
       try { await api("PATCH", `/api/entries/${e.id}`, body); load(true); } catch (x) { fail(x); load(true); }
     };
     const cb = h("input", { type: "checkbox", "aria-label": "Select entry", checked: selected.has(e.id),
       onchange: () => { cb.checked ? selected.add(e.id) : selected.delete(e.id); paint(); } });
-    const desc = h("input", { class: "bare desc", value: e.description, placeholder: "Add description", "aria-label": "Description" });
-    desc.addEventListener("change", () => patch({ description: desc.value }));
-    desc.addEventListener("keydown", (ev) => { if (ev.key === "Enter") desc.blur(); });
     const sp = parts(e.start_utc), ep = parts(e.end_utc);
     const sIn = h("input", { class: "bare time", value: clock(sp.h, sp.m), "aria-label": "Start time" });
     const eIn = h("input", { class: "bare time", value: clock(ep.h, ep.m), "aria-label": "End time" });
@@ -676,9 +782,13 @@ async function pageTracker(root) {
       { label: "Duplicate", fn: async () => { try { await api("POST", `/api/entries/${e.id}/duplicate`); toast("Duplicated"); load(true); } catch (x) { fail(x); } } },
       { label: "Delete", fn: async () => { await deleteEntries([e.id]); load(true); } },
     ]));
-    return h("div", { class: "entry" + (selected.has(e.id) ? " sel" : "") }, cb, desc,
-      projectChip(e.project_id, e.task_id, (v) => patch(v)),
-      tagButton(e.tags, (ids) => patch({ tag_ids: ids })),
+    return h("div", { class: "entry" + (child ? " child" : "") + (selected.has(e.id) ? " sel" : "") }, cb,
+      h("span", { class: "count-slot" }),
+      h("div", { class: "main" },
+        descCell(e.description, (v) => patch({ description: v })),
+        h("div", { class: "meta" },
+          projectChip(e.project_id, e.task_id, (v) => patch(v)),
+          tagButton(e.tags, (ids) => patch({ tag_ids: ids })))),
       dollar(e.billable, (v) => patch({ billable: v })),
       h("div", { class: "sep" }),
       h("div", { class: "times" }, sIn, h("span", { class: "muted" }, "–"), eIn, dateIn),

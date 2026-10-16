@@ -437,6 +437,9 @@ class Writer(unittest.TestCase):
         for ln in pdf.wrap(text, 200, "R", 8):
             self.assertLessEqual(pdf.width(ln, "R", 8), 200)
 
+    def test_wrap_keeps_line_breaks(self):
+        self.assertEqual(pdf.wrap("Header\n- one\n- two", 200, "R", 8), ["Header", "- one", "- two"])
+
     def test_unprintable_character_is_an_error_not_a_question_mark(self):
         doc = pdf.Document()
         with self.assertRaises(ValueError):
