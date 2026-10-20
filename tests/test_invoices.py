@@ -140,6 +140,18 @@ class Amounts(ProfileDir):
         self.assertIn(b"Website", text)
         self.assertNotIn(b"Other Co", text)
 
+    def test_monthly_maximum_of_zero_prints_no_maximum_rows(self):
+        def text(prof):
+            doc = invoices.render(invoices.build(
+                self.con, prof, "X", "2026-10-05", "2026-09-01", "2026-09-30"), prof)
+            return b"".join(zlib.decompress(part.rsplit(b"stream\n", 1)[1])
+                            for part in doc.split(b"\nendstream")[:-1])
+        self.assertIn(b"amount authorized", text(self.prof))
+        none = text(dict(self.prof, max_hours=0))
+        self.assertNotIn(b"amount authorized", none)
+        self.assertNotIn(b"Maximum billable", none)
+        self.assertIn(b"Total invoice", none)
+
     def test_time_under_another_client_name_is_explained(self):
         prof = dict(self.prof, client=dict(self.prof["client"], name="Contoso"))
         with self.assertRaises(core.Invalid) as e:

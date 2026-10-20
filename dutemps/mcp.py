@@ -6,11 +6,12 @@ The Model Context Protocol's stdio transport on the standard library:
 JSON-RPC 2.0, one UTF-8 JSON message per line on stdin and stdout. stdout
 carries protocol messages and nothing else; logs go to stderr.
 
-Every tool calls the functions the HTTP API calls (core, reports, invoices),
-so validation, the audit log and the frozen-invoice rules are the same as in
-the app. Dates and times going in and out are local, in the timezone on
-Settings. No tool issues or voids an invoice: that stays a human action in
-the app.
+Everything the app does has a tool, and every tool calls the functions the
+HTTP API calls (core, reports, exports, importers, invoices), so validation,
+the audit log and the frozen-invoice rules are the same as in the app. Dates
+and times going in and out are local, in the timezone on Settings. Issuing,
+voiding and deleting an invoice take the invoice number twice, so one can't
+happen by a slip.
 
 The app may be open on the same database at the same time. db.connect turns
 on WAL and a 5 s busy timeout, and every write is one short BEGIN IMMEDIATE
@@ -29,7 +30,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfoNotFoundError
 
 from . import __version__ as VERSION
-from . import core, db, invoices, reports
+from . import core, db, exports, importers, invoices, reports
 from .timeutil import fmt_utc, hms, local, parse_utc, seconds, week_start, zone
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")     # newest first
@@ -52,9 +53,11 @@ INSTRUCTIONS = (
     "refused. Refer to projects, tasks, clients and tags by name (case-insensitive) or "
     "id; an ambiguous or unknown name returns an error listing the candidates with "
     "their ids. Durations come back as seconds, h:mm:ss and decimal hours. Deleted "
-    "entries can be brought back with restore_entry. Invoices: you can preview, "
-    "create and edit drafts only. Issuing and voiding an invoice is done by the user "
-    "in the DuTemps app, never through these tools.")
+    "entries can be brought back with restore_entry. Files (exports, PDFs, backups) "
+    "go to the path given, or beside the database, and never overwrite a file. "
+    "Invoices: drafts can be changed freely; issue_invoice and void_invoice can't be "
+    "undone, so use them only when the user asks, and pass the invoice number again "
+    "as confirm.")
 
 
 class ToolError(Exception):
@@ -415,17 +418,25 @@ def _filters(con, a, need_dates=False):
         f["from"] = d1.isoformat()
     if d2:
         f["to"] = d2.isoformat()
-    cid = None
-    if _given(a.get("client")):
-        cid = _resolve(con, "client", a["client"])["id"]
-        f["client"] = [cid]
-    pid, tid = _project_task(con, a.get("project"), a.get("task"), cid)
-    if _given(a.get("project")):
-        f["project"] = [pid]
-    if tid:
-        f["task"] = [tid]
-    if _given(a.get("tag")):
-        f["tag"] = [_resolve(con, "tag", a["tag"])["id"]]
+    # Several of a kind match any of them; different kinds must all match, as in
+    # the app. Projects are looked up among the clients given, tasks among the
+    # projects given.
+    rows, scope = {}, {}
+    for kind in ("client", "project", "task", "tag"):
+        vs = a.get(kind)
+        vs = [v for v in (vs if isinstance(vs, list) else [vs]) if _given(v)]
+        if not vs:
+            continue
+        got = [_resolve(con, kind, v, rows.get(kind), scope.get(kind, "")) for v in vs]
+        f[kind] = sorted({r["id"] for r in got})
+        if kind == "client":
+            rows["project"] = [r for r in _rows(con, "project")
+                               if r["client_id"] in f["client"]]
+            scope["project"] = "for that client" if len(got) == 1 else "for those clients"
+        elif kind == "project":
+            rows["task"] = [r for r in _rows(con, "task") if r["project_id"] in f["project"]]
+            scope["task"] = (f"in project {got[0]['name']}" if len(f["project"]) == 1
+                             else "in those projects")
     if a.get("billable") is not None:
         f["billable"] = "true" if a["billable"] else "false"
     if _given(a.get("text")):
@@ -489,8 +500,8 @@ def _find_invoice(con, v):
                                            else "; there are no invoices yet"))
 
 
-FROZEN = ("This invoice is {status} and frozen; only the user can void it, in the "
-          "DuTemps app. A wrong invoice is voided there and a new draft made.")
+FROZEN = ("This invoice is {status} and frozen. A wrong invoice is voided "
+          "(void_invoice) and a new draft made.")
 
 
 def _invoice_out(g):
@@ -570,8 +581,9 @@ def _i(desc, **kw):
     return {"type": "integer", "description": desc, **kw}
 
 
-def _n(desc, **kw):
-    return {"type": "number", "description": desc, **kw}
+def _n(desc, nullable=False, **kw):
+    return {"type": ["number", "null"] if nullable else "number", "description": desc,
+            **kw}
 
 
 def _b(desc):
@@ -596,10 +608,12 @@ FILTERS = {
     "period": _s("A date range by name, instead of from/to.", enum=list(PERIODS)),
     "from": _s("First local date, inclusive: " + DATE),
     "to": _s("Last local date, inclusive: " + DATE),
-    "client": _s("Only this client (name or id)."),
-    "project": _s("Only this project (name or id)."),
-    "task": _s("Only this task (name or id)."),
-    "tag": _s("Only entries with this tag (name or id)."),
+    "client": _a("Only these clients (names or ids; one is fine).", {"type": "string"}),
+    "project": _a("Only these projects (names or ids; one is fine).",
+                  {"type": "string"}),
+    "task": _a("Only these tasks (names or ids; one is fine).", {"type": "string"}),
+    "tag": _a("Only entries with any of these tags (names or ids; one is fine).",
+              {"type": "string"}),
     "billable": _b("Only billable (true) or only non-billable (false) entries."),
     "text": _s("Only entries whose description contains this text."),
     "no_project": _b("Only entries without a project."),
@@ -618,8 +632,7 @@ INVOICE = {
                       "percentages.", {"type": "number"}),
     "note": _s("Internal note, never printed."),
 }
-NOT_ISSUE = (" It never issues or voids: the user does that in the DuTemps app after "
-             "reviewing the draft.")
+NOT_ISSUE = (" It never issues: issue_invoice does, when the user asks.")
 
 
 @tool("get_status", "Timer status and totals",
@@ -1151,6 +1164,521 @@ def update_invoice_draft(con, a):
     return _invoice_out(invoices.update(con, r["id"], b))
 
 
+# --- entries and the timer, as the tracker's buttons ------------------------------
+
+@tool("duplicate_entry", "Duplicate an entry",
+      "Copies a finished entry: same times, description, project, task, tags, billable "
+      "flag and rate (the app's Duplicate). Change the copy with update_entry.",
+      {"id": _i("Entry id (from list_entries).")}, ["id"])
+def duplicate_entry(con, a):
+    tz = _tz(con)
+    e = core.duplicate_entry(con, a["id"])
+    return _overlap_note(con, {"entry": _entry(e, tz)}, e["start_utc"], e["end_utc"],
+                         e["id"], tz)
+
+
+@tool("continue_entry", "Continue an entry",
+      "Starts the timer now with an entry's description, project, task, tags and "
+      "billable flag (the app's Continue). A running timer is stopped now first.",
+      {"id": _i("Entry id (from list_entries).")}, ["id"])
+def continue_entry(con, a):
+    e = core.get_entry(con, a["id"])
+    if not e:
+        raise ToolError(f"no entry with id {a['id']}")
+    r = core.switch_timer(con, {"description": e["description"],
+                                "project_id": e["project_id"], "task_id": e["task_id"],
+                                "billable": e["billable"],
+                                "tag_ids": [t["id"] for t in e["tags"]]})
+    tz = _tz(con)
+    return {"started": _entry(r["started"], tz), "stopped": _entry(r["stopped"], tz)}
+
+
+@tool("discard_timer", "Discard the running timer",
+      "Deletes the running timer without keeping its time (the app's Discard). "
+      "restore_entry with the audit_id brings it back.", destructive=True)
+def discard_timer(con, a):
+    r = core.discard_timer(con)
+    return {"discarded": r["deleted"], "audit_ids": r["audit_ids"],
+            "undo": "restore_entry with the audit_id puts it back"}
+
+
+@tool("recent_descriptions", "Recent descriptions",
+      "Description, project and task combinations used recently, newest first (the "
+      "tracker's suggestions), to reuse the user's own wording.",
+      {"text": _s("Only descriptions containing this text."),
+       "limit": _i("At most this many (1-50). Default 12.", minimum=1, maximum=50)},
+      read_only=True)
+def recent_descriptions(con, a):
+    m = core.meta(con)
+    projects = {p["id"]: p["name"] for p in m["projects"]}
+    tasks = {t["id"]: t["name"] for t in m["tasks"]}
+    tz = _tz(con)
+    out = [{"description": r["description"], "project": projects.get(r["project_id"]),
+            "task": tasks.get(r["task_id"]), "last_used": _local(r["last"], tz)}
+           for r in core.suggestions(con, str(a.get("text") or ""), a.get("limit") or 12)]
+    return {"suggestions": out, "count": len(out)}
+
+
+# --- settings ------------------------------------------------------------------------
+
+@tool("update_settings", "Change settings",
+      "Changes the app's settings; only the fields given change.",
+      {"timezone": _s("IANA time zone, e.g. 'Europe/Paris'."),
+       "currency": _s("Currency code, e.g. 'USD'."),
+       "default_rate": _n("Hourly rate for projects and clients without their own.",
+                          minimum=0),
+       "week_start": _i("First day of the week: 1 = Monday ... 7 = Sunday.",
+                        minimum=1, maximum=7),
+       "user_name": _s("Your name."),
+       "user_email": _s("Your email."),
+       "time_format": _s("12- or 24-hour clock in the app.", enum=["12", "24"]),
+       "duration_format": _s("Durations as h:mm:ss or decimal hours in the app.",
+                             enum=["hms", "decimal"])},
+      destructive=True, idempotent=True)
+def update_settings(con, a):
+    a = {k: v for k, v in a.items() if v is not None}
+    if not a:
+        raise ToolError("nothing to change; give at least one setting")
+    return {"settings": core.set_settings(con, a), "changed": sorted(a)}
+
+
+# --- clients, projects, tasks and tags -----------------------------------------------
+
+IN_USE = (" One still in use (by entries, or a client by projects) is archived instead, "
+          "so past entries keep their labels.")
+TASK_PROJECT = _s("The task's project (name or id), when the task name alone is not "
+                  "unique.")
+
+
+def _changes(a, keys):
+    data = {k: a[k] for k in keys if k in a}
+    if not data:
+        raise ToolError(f"nothing to change; give at least one of {', '.join(keys)}")
+    return data
+
+
+@tool("update_client", "Update a client",
+      "Changes a client; only the fields given change. A null hourly_rate removes its "
+      "own rate.",
+      {"client": _s("Client name or id."), "name": _s("New name."),
+       "hourly_rate": _n("Its rate; null for none.", minimum=0, nullable=True),
+       "archived": _b("Archived or not."), "note": _s("Free text.")},
+      ["client"], destructive=True, idempotent=True)
+def update_client(con, a):
+    c = _resolve(con, "client", a["client"])
+    return {"client": core.update(con, "clients", c["id"],
+                                  _changes(a, ("name", "hourly_rate", "archived", "note")))}
+
+
+@tool("update_project", "Update a project",
+      "Changes a project; only the fields given change. A null hourly_rate or "
+      "estimate_hours removes it; an empty client removes the client.",
+      {"project": PROJECT, "name": _s("New name."),
+       "client": _s("Client name or id; an empty string for none."),
+       "billable": _b("Whether its time is billable by default."),
+       "hourly_rate": _n("Its rate; null for none.", minimum=0, nullable=True),
+       "estimate_hours": _n("Estimated hours; null for none.", minimum=0, nullable=True),
+       "color": _s("Colour as #RRGGBB."), "archived": _b("Archived or not."),
+       "note": _s("Free text.")},
+      ["project"], destructive=True, idempotent=True)
+def update_project(con, a):
+    p = _resolve(con, "project", a["project"])
+    data = {k: a[k] for k in ("name", "billable", "hourly_rate", "estimate_hours",
+                              "color", "archived", "note") if k in a}
+    if "client" in a:
+        data["client_id"] = (_resolve(con, "client", a["client"])["id"]
+                             if _given(a["client"]) else None)
+    if not data:
+        raise ToolError("nothing to change; give at least one field besides project")
+    p = core.update(con, "projects", p["id"], data)
+    return {"project": {**p, "client": (db.row(con, "clients", p["client_id"]) or {})
+                        .get("name")}}
+
+
+@tool("update_task", "Update a task",
+      "Changes a task; only the fields given change. A null hourly_rate or "
+      "estimate_hours removes it.",
+      {"task": TASK, "project": TASK_PROJECT, "name": _s("New name."),
+       "hourly_rate": _n("Its rate; null for none.", minimum=0, nullable=True),
+       "estimate_hours": _n("Estimated hours; null for none.", minimum=0, nullable=True),
+       "done": _b("Done (hidden from pickers) or not.")},
+      ["task"], destructive=True, idempotent=True)
+def update_task(con, a):
+    _, tid = _project_task(con, a.get("project"), a["task"])
+    t = core.update(con, "tasks", tid,
+                    _changes(a, ("name", "hourly_rate", "estimate_hours", "done")))
+    return {"task": {**t, "project": db.row(con, "projects", t["project_id"])["name"]}}
+
+
+@tool("update_tag", "Update a tag", "Renames or archives a tag.",
+      {"tag": _s("Tag name or id."), "name": _s("New name."),
+       "archived": _b("Archived or not.")},
+      ["tag"], destructive=True, idempotent=True)
+def update_tag(con, a):
+    t = _resolve(con, "tag", a["tag"])
+    return {"tag": core.update(con, "tags", t["id"], _changes(a, ("name", "archived")))}
+
+
+def _remove(con, table, r):
+    return {**core.delete(con, table, r["id"]), "id": r["id"], "name": r["name"]}
+
+
+@tool("delete_client", "Delete a client", "Deletes a client." + IN_USE,
+      {"client": _s("Client name or id.")}, ["client"], destructive=True)
+def delete_client(con, a):
+    return _remove(con, "clients", _resolve(con, "client", a["client"]))
+
+
+@tool("delete_project", "Delete a project", "Deletes a project." + IN_USE,
+      {"project": PROJECT}, ["project"], destructive=True)
+def delete_project(con, a):
+    return _remove(con, "projects", _resolve(con, "project", a["project"]))
+
+
+@tool("delete_task", "Delete a task",
+      "Deletes a task. One used by entries is marked done instead.",
+      {"task": TASK, "project": TASK_PROJECT}, ["task"], destructive=True)
+def delete_task(con, a):
+    _, tid = _project_task(con, a.get("project"), a["task"])
+    return _remove(con, "tasks", db.row(con, "tasks", tid))
+
+
+@tool("delete_tag", "Delete a tag", "Deletes a tag." + IN_USE,
+      {"tag": _s("Tag name or id.")}, ["tag"], destructive=True)
+def delete_tag(con, a):
+    return _remove(con, "tags", _resolve(con, "tag", a["tag"]))
+
+
+# --- more reports ----------------------------------------------------------------------
+
+WEEK = _s("Any date in the week: " + DATE + " Default: this week.")
+NO_DATES = {k: v for k, v in FILTERS.items() if k not in ("period", "from", "to")}
+
+
+def _week_of(con, v):
+    return week_start(_day(con, v, "week") or _today(con),
+                      int(db.settings(con)["week_start"]))
+
+
+def _hours(sec):
+    return round(sec / 3600, 2)
+
+
+@tool("report_weekly", "Weekly report",
+      "One week as a grid: a row per project and task with the hours of each day, and "
+      "the totals (the app's Weekly report and timesheet).",
+      {"week": WEEK, **NO_DATES}, read_only=True)
+def report_weekly(con, a):
+    w0 = _week_of(con, a.get("week"))
+    r = reports.weekly(con, _filters(con, {k: v for k, v in a.items() if k != "week"}),
+                       w0.isoformat())
+    return {"days": r["days"],
+            "rows": [{"project": x["project"], "task": x["task"], "client": x["client"],
+                      "day_hours": [_hours(s) for s in x["days"]], **_dur(x["total"])}
+                     for x in r["rows"]],
+            "day_totals": [_hours(s) for s in r["totals"]], "total": _dur(r["total"])}
+
+
+@tool("report_series", "Hours over time",
+      "Hours per day or per week, split by project, over a date range (the app's "
+      "charts).",
+      {**FILTERS, "by": _s("day (default) or week.", enum=["day", "week"])},
+      read_only=True)
+def report_series(con, a):
+    by = a.get("by") or "day"
+    f = _filters(con, {k: v for k, v in a.items() if k != "by"}, need_dates=True)
+    d1, d2 = f.pop("from"), f.pop("to")
+    r = reports.series(con, f, d1, d2, by)
+    return {"from": d1, "to": d2, "by": by,
+            "buckets": [{"start": b,
+                         "hours": {p: _hours(s) for p, s in r["values"][b].items()},
+                         "total_hours": _hours(sum(r["values"][b].values()))}
+                        for b in r["buckets"]]}
+
+
+@tool("get_dashboard", "Dashboard",
+      "The app's Dashboard: hours and amounts today, this week and this month, the "
+      "week's and the month's projects, and the latest entries.", read_only=True)
+def get_dashboard(con, a):
+    tz = _tz(con)
+    r = reports.dashboard(con, _today(con).isoformat())
+
+    def total(t):
+        return {**_dur(t["seconds"]), "billable_hours": _hours(t["billable_seconds"]),
+                "amount": t["amount"], "entries": t["entries"]}
+    return {"today": total(r["today"]),
+            "week": {"from": r["week_start"], **total(r["week"]),
+                     "projects": [_group(g) for g in r["week_projects"]]},
+            "month": {"from": r["month_start"], **total(r["month"]),
+                      "projects": [_group(g) for g in r["month_projects"]]},
+            "recent": [_entry(e, tz) for e in r["recent"]]}
+
+
+# --- files: exports, PDFs, imports and backups ---------------------------------------
+
+PATH = _s("File or folder to write to. Default: the exports folder beside the "
+          "database. An existing file is never overwritten.")
+
+
+def _beside_db(con, sub):
+    f = con.execute("PRAGMA database_list").fetchone()["file"]
+    if not f:
+        raise ToolError("the database is in memory; give a path")
+    return os.path.join(os.path.dirname(f), sub)
+
+
+def _safe_name(name):
+    """A file name from text such as an invoice number: no folders, nothing
+    Windows refuses."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "-", name).strip(" .")
+    return name or "file"
+
+
+def _out_path(con, path, name):
+    """Where a file goes: the path given (a file, or a folder for `name`), or
+    the exports folder beside the database. Never an existing file."""
+    name = _safe_name(name)
+    if _given(path):
+        p = os.path.abspath(os.path.expanduser(str(path)))
+        if os.path.isdir(p):
+            p = os.path.join(p, name)
+    else:
+        p = os.path.join(_beside_db(con, "exports"), name)
+    if os.path.exists(p):
+        raise ToolError(f"{p} already exists; give another path")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    return p
+
+
+def _write(path, data):
+    try:
+        with open(path, "xb") as f:
+            f.write(data)
+    except FileExistsError:
+        raise ToolError(f"{path} already exists; give another path") from None
+    return {"path": path, "bytes": len(data)}
+
+
+@tool("export_report", "Export a report",
+      "Writes a report to a CSV or Excel file, as the app's Export does: detailed "
+      "(every entry), summary, weekly or invoice lines. Returns the file's path.",
+      {**FILTERS,
+       "kind": _s("Which report. Default detailed.",
+                  enum=["detailed", "summary", "weekly", "invoice"]),
+       "format": _s("csv (default) or xlsx.", enum=["csv", "xlsx"]),
+       "group1": _s("Summary only: first grouping. Default project.",
+                    enum=list(reports.GROUPS)),
+       "group2": _s("Summary only: second grouping.", enum=list(reports.GROUPS)),
+       "week": _s("Weekly only, instead of dates: any date in the week. Default: this "
+                  "week."),
+       "path": PATH})
+def export_report(con, a):
+    kind, fmt = a.get("kind") or "detailed", a.get("format") or "csv"
+    monday = None
+    if kind == "weekly":
+        w0 = _week_of(con, a.get("week"))
+        monday, span = w0.isoformat(), f"week-of-{w0}"
+        f = _filters(con, {k: a[k] for k in NO_DATES if k in a})
+    else:
+        f = _filters(con, {k: a[k] for k in FILTERS if k in a}, need_dates=True)
+        span = f"{f['from']}_{f['to']}"
+    head, rows = exports.table(con, kind, f, a.get("group1") or "project",
+                               a.get("group2") or None, monday)
+    data = (exports.to_xlsx(head, rows, kind.title()) if fmt == "xlsx"
+            else exports.to_csv(head, rows))
+    path = _out_path(con, a.get("path"), f"DuTemps_{kind}_{span}.{fmt}")
+    return {**_write(path, data), "rows": len(rows)}
+
+
+@tool("save_invoice_pdf", "Save an invoice PDF",
+      "Writes an invoice's PDF to a file and returns its path. A draft is built now and "
+      "marked DRAFT; an issued or void invoice gives the document stored when it was "
+      "issued.",
+      {"invoice": _s("Invoice number or id."), "path": PATH}, ["invoice"])
+def save_invoice_pdf(con, a):
+    r = _find_invoice(con, a["invoice"])
+    name, data = invoices.pdf_for(con, r["id"])
+    return {**_write(_out_path(con, a.get("path"), name), data), "number": r["number"],
+            "status": r["status"]}
+
+
+@tool("import_csv", "Import entries from a CSV",
+      "Adds the entries in a DuTemps CSV file (start_date, start_time, end_date, "
+      "end_time, duration_hours, billable_rate, description, project, client, task, "
+      "billable), creating missing clients, projects and tasks. Rows imported before "
+      "are skipped. Run it with dry_run first to see what it would add.",
+      {"path": _s("The CSV file."),
+       "dry_run": _b("Report what would be added and change nothing. Default false.")},
+      ["path"])
+def import_csv(con, a):
+    path = os.path.abspath(os.path.expanduser(a["path"]))
+    if not os.path.isfile(path):
+        raise ToolError(f"no file {path}")
+    try:
+        return importers.import_csv(con, path, dry_run=bool(a.get("dry_run")))
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"{os.path.basename(path)} can't be imported: {e}") from None
+
+
+@tool("backup_database", "Back up the database",
+      "Copies the database to the backups folder beside it (or to a path given) and "
+      "returns the copy's path. Worth doing before a large change.",
+      {"label": _s("A word or two for the file name, e.g. 'before-import'."),
+       "path": _s("Where to write the copy instead. An existing file is never "
+                  "overwritten.")})
+def backup_database(con, a):
+    label = re.sub(r"[^\w-]+", "-", str(a.get("label") or "")).strip("-")
+    name = f"dutemps-{datetime.now():%Y%m%d-%H%M%S}" + (f"-{label}" if label else "")
+    if _given(a.get("path")):
+        dest = _out_path(con, a["path"], name + ".db")
+    else:
+        dest = os.path.join(_beside_db(con, "backups"), name + ".db")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:        # claim the name first: a backup would overwrite a file there
+        open(dest, "xb").close()
+    except FileExistsError:
+        raise ToolError(f"{dest} already exists; give another path or try again "
+                        "in a second") from None
+    try:
+        db.backup(con, dest)
+    except BaseException:
+        with contextlib.suppress(OSError):      # the backup's own error matters more
+            os.remove(dest)
+        raise
+    return {"path": dest, "bytes": os.path.getsize(dest)}
+
+
+# --- invoices: delete, issue, void ------------------------------------------------------
+
+CONFIRM = _s("The invoice number again, exactly, to confirm.")
+
+
+def _confirmed(con, a, verb):
+    r = _find_invoice(con, a["invoice"])
+    if str(a["confirm"]).strip() != r["number"]:
+        raise ToolError(f"to {verb} {r['number']}, give confirm={r['number']!r}; "
+                        "nothing was changed")
+    return r
+
+
+@tool("delete_invoice_draft", "Delete an invoice draft",
+      "Deletes a draft invoice. Issued invoices can't be deleted; they are voided.",
+      {"invoice": _s("Number or id of the draft."), "confirm": CONFIRM},
+      ["invoice", "confirm"], destructive=True)
+def delete_invoice_draft(con, a):
+    r = _confirmed(con, a, "delete")
+    invoices.delete(con, r["id"], number=r["number"])
+    return {"deleted": r["number"], "id": r["id"]}
+
+
+@tool("issue_invoice", "Issue an invoice",
+      "Issues a draft: its PDF and figures are stored and never change afterwards (a "
+      "wrong invoice is voided and a new one issued). Do it only when the user asks, "
+      "after checking the draft with get_invoice or save_invoice_pdf. Refused while "
+      "the invoice settings are the shipped example, or when an issued invoice "
+      "already bills some of the same time.",
+      {"invoice": _s("Number or id of the draft."), "confirm": CONFIRM},
+      ["invoice", "confirm"], destructive=True)
+def issue_invoice(con, a):
+    r = _confirmed(con, a, "issue")
+    return _invoice_out(invoices.issue(con, r["id"], number=r["number"]))
+
+
+@tool("void_invoice", "Void an invoice",
+      "Voids an issued invoice, only when the user asks. Its PDF is kept, marked void, "
+      "and its time can be invoiced again. This can't be undone.",
+      {"invoice": _s("Number or id of the issued invoice."), "confirm": CONFIRM,
+       "reason": _s("Why; kept in the audit log.")},
+      ["invoice", "confirm"], destructive=True)
+def void_invoice(con, a):
+    r = _confirmed(con, a, "void")
+    return _invoice_out(invoices.void(con, r["id"], str(a.get("reason") or ""),
+                                      number=r["number"]))
+
+
+# --- invoice settings -------------------------------------------------------------------
+
+PROFILE_KEYS = ("issuer", "client", "agreement", "terms", "intro", "rate", "max_hours",
+                "remittance", "retainer_label", "sections", "credits", "credit_note")
+MERGED = ("issuer", "client", "credit_note")       # only the keys given change
+OBJECT = {"type": "object"}
+PROFILE = {
+    "issuer": {**OBJECT, "description": "You, as printed: name, phone, email."},
+    "client": {**OBJECT, "description": "Who is billed: name (one of your clients; "
+               "only its time is billed), address (a list of up to 6 lines), attn, "
+               "email."},
+    "agreement": _s("Agreement line."),
+    "terms": _s("Payment terms line."),
+    "intro": _s("Introduction under the header (up to 3 printed lines)."),
+    "rate": _n("Hourly rate printed and billed.", minimum=0),
+    "max_hours": _n("Monthly maximum hours, printed with the maximum and additional "
+                    "amount authorized rows; 0 leaves those rows off.", minimum=0),
+    "remittance": _a("Remittance lines under the billing summary (up to 6).",
+                     {"type": "string"}),
+    "retainer_label": _s("Retainer line; {date} becomes the date, e.g. 30-Sep-26."),
+    "sections": _a("All sections, replacing them: heading, key, optional intro, and "
+                   "either subtotal and pairs ([project, task]) or groups of label, "
+                   "subtotal and pairs. Read the current ones with get_invoice_settings "
+                   "first.", OBJECT),
+    "credits": _a("All credits, replacing them: label (may use {pct}), pct, and scope "
+                  "{project: name} or {section: key}.", OBJECT),
+    "credit_note": {**OBJECT, "description": "The note about credits at the foot: head "
+                    "and text."},
+}
+
+
+def _profile_body(a, cur=None):
+    """The current profile with the given fields changed: issuer, client and
+    credit_note key by key, the rest whole."""
+    cur = invoices.load_profile() if cur is None else cur
+    b = {k: cur[k] for k in PROFILE_KEYS if k in cur}
+    for k in PROFILE_KEYS:
+        if a.get(k) is not None:
+            b[k] = {**cur.get(k, {}), **a[k]} if k in MERGED else a[k]
+    return b
+
+
+@tool("get_invoice_settings", "Invoice settings",
+      "The invoice settings (the app's Invoice settings): you and the client as "
+      "printed, agreement, terms, rate, monthly maximum, sections, credits and "
+      "wording. example is true while they are still the shipped example.",
+      read_only=True)
+def get_invoice_settings(con, a):
+    return {"settings": invoices.profile_for_editor()}
+
+
+@tool("update_invoice_settings", "Change invoice settings",
+      "Changes the invoice settings; only the fields given change, and in issuer, "
+      "client and credit_note only the keys given. They are checked as the app checks "
+      "them (wording must fit where it is printed; every billed project in a section). "
+      "The old settings are backed up first. Drafts follow the new settings; issued "
+      "invoices keep the ones they were issued with.",
+      PROFILE, destructive=True, idempotent=True)
+def update_invoice_settings(con, a):
+    if all(a.get(k) is None for k in PROFILE_KEYS):
+        raise ToolError("nothing to change; give at least one field")
+    seen = {}
+
+    def patch(cur):     # applied to the settings as saved, inside save_profile's lock
+        seen["before"] = cur
+        return _profile_body(a, cur)
+    after = invoices.save_profile(con, patch)
+    return {"settings": after,
+            "changed": [k for k in PROFILE_KEYS
+                        if a.get(k) is not None and seen["before"].get(k) != after.get(k)]}
+
+
+@tool("preview_invoice_settings", "Preview invoice settings",
+      "Writes a DRAFT PDF of the newest invoice with changed invoice settings, without "
+      "saving them, so the result can be checked first. Takes the fields "
+      "update_invoice_settings takes, and where to write the PDF.",
+      {**PROFILE, "path": PATH})
+def preview_invoice_settings(con, a):
+    data = invoices.profile_preview(con, _profile_body(a))
+    name = f"Invoice settings preview {datetime.now():%Y%m%d-%H%M%S}.pdf"
+    return {**_write(_out_path(con, a.get("path"), name), data), "saved": False}
+
+
 # --- argument checking -------------------------------------------------------------
 
 ID_ARGS = {"project", "task", "client", "tag", "tags", "invoice"}     # a name, or an id
@@ -1182,6 +1710,8 @@ def _check(key, spec, v, numeric=None):
     if numeric is None:
         numeric = "id" if key in ID_ARGS else "number" if key in NUMBER_ARGS else None
     t = spec.get("type")
+    if isinstance(t, list):         # ["number", "null"]: null is handled just below
+        t = next(x for x in t if x != "null")
     if v is None:
         return None
     if t == "string":
@@ -1218,6 +1748,9 @@ def _check(key, spec, v, numeric=None):
             v = v.strip().lower() == "true"
         if not isinstance(v, bool):
             raise ToolError(f"{key} must be true or false")
+    elif t == "object":
+        if not isinstance(v, dict):
+            raise ToolError(f"{key} must be an object ({{...}}), not {_what(v)}")
     elif t == "array":
         if not isinstance(v, list):
             v = [v]

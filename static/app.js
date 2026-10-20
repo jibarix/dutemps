@@ -1567,7 +1567,7 @@ async function invoiceSettings(root) {
       h("div", { class: "row" }, field(p, "agreement", "Agreement", { grow: true }), field(p, "terms", "Terms", { grow: true })),
       h("div", { class: "row" },
         field(p, "rate", "Hourly rate (USD)", { type: "number", min: "0", step: "0.01", style: { width: "130px" } }),
-        field(p, "max_hours", "Monthly maximum (hours)", { type: "number", min: "0", step: "0.5", style: { width: "130px" } }),
+        field(p, "max_hours", "Monthly maximum (hours, 0 = not printed)", { type: "number", min: "0", step: "0.5", style: { width: "130px" } }),
         field(p, "retainer_label", "Retainer line ({date} becomes e.g. 30-Sep-26)", { grow: true })),
       area(p, "intro", "Introduction (under the header, up to 3 printed lines)", 2),
       area(p, "remittance", "Remittance lines (one per line, printed under the billing summary)", 3,

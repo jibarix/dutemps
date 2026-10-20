@@ -119,7 +119,7 @@ a snapshot, and they never change after that. A wrong invoice is voided and
 a new one issued.
 
 The monthly maximum and "additional amount authorized" rows come from
-`max_hours` in the profile.
+`max_hours` in the profile. Set it to 0 to leave them off the invoice.
 
 ![A draft invoice: the form on the left, the billing summary on the right](docs/images/invoice.png)
 
@@ -205,16 +205,28 @@ instead, put `--db` and a path before `mcp` (in Codex,
 The tools:
 
 - reading: `get_status` (today's date, the running timer, totals),
-  `get_settings`, `list_projects`, `list_clients`, `list_tags`,
-  `list_entries`, `list_deleted_entries`, `report_summary`, `invoice_lines`,
-  `list_invoices`, `get_invoice`, `preview_invoice`;
-- changing: `start_timer`, `stop_timer`, `log_time`, `update_entry`,
-  `delete_entries`, `restore_entry`, `create_client`, `create_project`,
-  `create_task`, `create_tag`, `create_invoice_draft`,
-  `update_invoice_draft`.
+  `get_settings`, `get_dashboard`, `list_projects`, `list_clients`,
+  `list_tags`, `list_entries`, `list_deleted_entries`,
+  `recent_descriptions`, `report_summary`, `report_weekly`,
+  `report_series`, `invoice_lines`, `list_invoices`, `get_invoice`,
+  `preview_invoice`, `get_invoice_settings`;
+- the timer and entries: `start_timer`, `stop_timer`, `continue_entry`,
+  `discard_timer`, `log_time`, `duplicate_entry`, `update_entry`,
+  `delete_entries`, `restore_entry`;
+- clients, projects, tasks and tags: `create_*`, `update_*` and `delete_*`
+  for each (one still in use is archived instead of deleted);
+- settings: `update_settings`, `update_invoice_settings` (only the fields
+  given change; the old settings are backed up), `preview_invoice_settings`;
+- invoices: `create_invoice_draft`, `update_invoice_draft`,
+  `delete_invoice_draft`, `issue_invoice`, `void_invoice`,
+  `save_invoice_pdf`;
+- files: `export_report` (CSV or Excel), `import_csv` (with a dry run),
+  `backup_database`. Files go to the path given, or to `exports/` or
+  `backups/` beside the database, and never replace an existing file.
 
 Agents name projects, tasks, clients and tags as you do, or by id. A name
 that fits more than one, or none, is refused with the candidates listed.
+Report filters take one or several of each, as the app's do.
 Dates and times are in the time zone on Settings. On the night the clocks go
 back, a time in the repeated hour needs its UTC offset (`01:30-05:00`), and a
 time in the hour skipped in spring is refused. Every change goes through
@@ -222,8 +234,9 @@ the same code as the app, so it is checked the same way and kept in the audit
 log, and a deleted entry can be restored (`restore_entry`, or Recently
 deleted in the app).
 
-No tool issues or voids an invoice. An agent can preview invoices and create
-and edit drafts; you review a draft and issue it in the app.
+Issuing, voiding and deleting an invoice can't be undone, so those tools
+take the invoice number a second time (`confirm`); an agent should use them
+only when you ask.
 
 The server can run while the app is open on the same database: SQLite takes
 the writes in turn. The app doesn't watch the database, so reload its page to

@@ -6,9 +6,11 @@ transport end to end.
 Each test uses an in-memory database (or one in a temporary folder) and a
 temporary copy of examples/invoice_profile.json, so data/ is never touched.
 """
+import contextlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -91,7 +93,7 @@ class Protocol(McpCase):
         self.assertEqual(r["serverInfo"]["name"], "dutemps")
         self.assertTrue(r["serverInfo"]["version"])
         self.assertIn("time zone", r["instructions"])
-        self.assertIn("Issuing and voiding", r["instructions"])
+        self.assertIn("issue_invoice and void_invoice", r["instructions"])
 
     def test_notifications_get_no_reply_and_ping_answers(self):
         for method in ("notifications/initialized", "notifications/cancelled", "nonsense"):
@@ -160,26 +162,38 @@ class Protocol(McpCase):
         out = strict(self.srv.handle_line('{"jsonrpc": "2.0", "id": 4, "method": "ping"}'))
         self.assertEqual((out["id"], out["error"]["code"]), (4, -32603))
 
-    def test_tools_list_has_schemas_annotations_and_no_issue_or_void(self):
+    def test_tools_list_has_schemas_and_annotations(self):
         tools = self.rpc("tools/list")["result"]["tools"]
         names = [t["name"] for t in tools]
         self.assertEqual(len(names), len(set(names)))
         for want in ("get_status", "start_timer", "stop_timer", "log_time", "list_entries",
                      "update_entry", "delete_entries", "restore_entry", "report_summary",
                      "invoice_lines", "preview_invoice", "create_invoice_draft",
-                     "update_invoice_draft", "get_invoice", "list_invoices"):
+                     "update_invoice_draft", "get_invoice", "list_invoices",
+                     "duplicate_entry", "continue_entry", "discard_timer",
+                     "recent_descriptions", "update_settings", "update_client",
+                     "update_project", "update_task", "update_tag", "delete_client",
+                     "delete_project", "delete_task", "delete_tag", "report_weekly",
+                     "report_series", "get_dashboard", "export_report",
+                     "save_invoice_pdf", "import_csv", "backup_database",
+                     "delete_invoice_draft", "issue_invoice", "void_invoice",
+                     "get_invoice_settings", "update_invoice_settings",
+                     "preview_invoice_settings"):
             self.assertIn(want, names)
         for t in tools:
-            self.assertNotIn("issue", t["name"])
-            self.assertNotIn("void", t["name"])
             self.assertTrue(t["description"])
             s = t["inputSchema"]
             self.assertEqual((s["type"], s["additionalProperties"]), ("object", False))
             for k in s.get("required", []):
                 self.assertIn(k, s["properties"])
             for k, p in s["properties"].items():
-                self.assertIn(p["type"], ("string", "integer", "number", "boolean", "array"),
-                              f"{t['name']}.{k}")
+                types = p["type"] if isinstance(p["type"], list) else [p["type"]]
+                for ty in types:
+                    self.assertIn(ty, ("string", "integer", "number", "boolean", "array",
+                                       "object", "null"), f"{t['name']}.{k}")
+                # a client that enforces the schema can send the null that clears it
+                self.assertEqual("null for none" in p.get("description", ""),
+                                 "null" in types, f"{t['name']}.{k}")
                 self.assertTrue(p.get("description"), f"{t['name']}.{k}")
             a = t["annotations"]
             for k in ("title", "readOnlyHint", "destructiveHint", "idempotentHint"):
@@ -192,7 +206,11 @@ class Protocol(McpCase):
         self.assertFalse(hints["log_time"]["readOnlyHint"])
         for name in ("create_invoice_draft", "update_invoice_draft"):
             d = next(t["description"] for t in tools if t["name"] == name)
-            self.assertIn("never issues or voids", d)
+            self.assertIn("never issues", d)
+        for name in ("issue_invoice", "void_invoice", "delete_invoice_draft"):
+            s = next(t["inputSchema"] for t in tools if t["name"] == name)
+            self.assertIn("confirm", s["required"])
+            self.assertTrue(hints[name]["destructiveHint"])
 
     def test_arguments_are_checked_before_anything_runs(self):
         self.assertIn("unknown argument colour", self.fails("list_tags", colour="red"))
@@ -344,6 +362,33 @@ class Entries(McpCase):
         lines = self.call("invoice_lines", rng, client="Client A")
         self.assertEqual((lines["count"], lines["hours"]), (2, 3.75))
 
+    def test_filters_take_several_of_a_kind_as_the_app_does(self):
+        self.call("log_time", date="2026-09-01", duration="1h", project="website",
+                  task="design")
+        self.call("log_time", date="2026-09-01", duration="2h", project="internal",
+                  tags=["meeting"])
+        self.call("log_time", date="2026-09-01", duration="4h")
+        rng = {"from": "2026-09-01", "to": "2026-09-30"}
+        both = self.call("report_summary", rng, project=["website", "Internal"])
+        self.assertEqual(both["total"]["hours"], 3.0)
+        self.assertEqual(self.call("report_summary", rng, project="internal")
+                         ["total"]["hours"], 2.0)
+        # several of one kind: any; different kinds: all
+        self.assertEqual(self.call("list_entries", rng, project=["website", "internal"],
+                                   tag=["meeting"])["count"], 1)
+        self.assertEqual(self.call("list_entries", rng, project=["website", "internal"],
+                                   task=["design"])["count"], 1)
+        self.assertIn("in those projects", self.fails(
+            "list_entries", project=["website", "internal"], task="nothing"))
+        self.assertIn("for that client", self.fails(
+            "list_entries", client=["client a"], project="internal"))
+        x = self.call("export_report", rng, kind="summary", path=self.dir,
+                      project=["website", "internal"])
+        with open(x["path"], encoding="utf-8-sig") as f:
+            text = f.read()
+        self.assertIn("Website", text)
+        self.assertIn("Internal", text)
+
     def test_delete_entries_then_restore(self):
         a = self.call("log_time", date="2026-09-01", duration="1h", project="Website",
                       tags=["meeting"], description="first")["entry"]
@@ -475,6 +520,174 @@ class Entries(McpCase):
                          (pid, "Design", ["meeting"], 5400))
 
 
+    def test_duplicate_continue_discard_and_recent_descriptions(self):
+        e = self.call("log_time", date="2026-09-01", start="09:00", end="10:00",
+                      description="Homepage", project="website", tags=["meeting"])["entry"]
+        d = self.call("duplicate_entry", id=e["id"])
+        self.assertNotEqual(d["entry"]["id"], e["id"])
+        self.assertEqual((d["entry"]["start"], d["entry"]["tags"]), (e["start"], ["meeting"]))
+        self.assertEqual(d["overlaps"][0]["id"], e["id"])
+        c = self.call("continue_entry", id=e["id"])["started"]
+        self.assertTrue(c["running"])
+        self.assertEqual((c["description"], c["project"], c["tags"]),
+                         ("Homepage", "Website", ["meeting"]))
+        gone = self.call("discard_timer")
+        self.assertEqual(gone["discarded"], [c["id"]])
+        self.assertIsNone(self.call("get_status")["running"])
+        self.assertIn("no timer is running", self.fails("discard_timer"))
+        self.assertEqual(self.call("restore_entry", audit_id=gone["audit_ids"][0])
+                         ["entry"]["id"], c["id"])
+        r = self.call("recent_descriptions", text="home")["suggestions"]
+        self.assertEqual([(x["description"], x["project"]) for x in r],
+                         [("Homepage", "Website")])
+        self.assertIn("not found", self.fails("duplicate_entry", id=999))
+
+    def test_update_settings_changes_only_what_is_given(self):
+        s = self.call("update_settings", currency="EUR", week_start=7)["settings"]
+        self.assertEqual((s["currency"], str(s["week_start"]), s["timezone"]),
+                         ("EUR", "7", "Etc/GMT+4"))
+        self.assertIn("nothing to change", self.fails("update_settings"))
+        self.assertIn("must be one of", self.fails("update_settings", time_format="13"))
+        self.fails("update_settings", timezone="Mars/Olympus_Mons")
+        self.assertEqual(self.call("get_status")["timezone"], "Etc/GMT+4")
+
+    def test_update_and_delete_clients_projects_tasks_and_tags(self):
+        self.call("log_time", date="2026-09-01", duration="1h", project="website",
+                  task="design", tags=["meeting"])
+        c = self.call("update_client", client="client a", name="Client B",
+                      hourly_rate=None)["client"]
+        self.assertEqual((c["name"], c["hourly_rate"]), ("Client B", None))
+        p = self.call("update_project", project="website", client="",
+                      estimate_hours=10)["project"]
+        self.assertEqual((p["client"], p["estimate_hours"]), (None, 10))
+        p = self.call("update_project", project="website", client="client b")["project"]
+        self.assertEqual(p["client"], "Client B")
+        t = self.call("update_task", task="design", name="Design work")["task"]
+        self.assertEqual((t["name"], t["project"]), ("Design work", "Website"))
+        self.assertEqual(self.call("update_tag", tag="meeting", name="call")["tag"]["name"],
+                         "call")
+        self.assertIn("nothing to change", self.fails("update_tag", tag="call"))
+        self.assertIn("unknown argument colour", self.fails(
+            "update_project", project="website", colour="#000000"))
+        # in use: kept, archived (a task: done), so past entries keep their labels
+        for tool, kw in (("delete_task", {"task": "design work"}),
+                         ("delete_project", {"project": "website"}),
+                         ("delete_tag", {"tag": "call"}),
+                         ("delete_client", {"client": "client b"})):
+            self.assertEqual(self.call(tool, **kw)["archived"], True, tool)
+        e = self.call("list_entries")["entries"][0]
+        self.assertEqual((e["project"], e["task"], e["tags"]), ("Website", "Design work",
+                                                                ["call"]))
+        # unused: gone
+        self.assertTrue(self.call("delete_project", project="internal")["deleted"])
+        self.assertIn("no project", self.fails("delete_project", project="internal"))
+
+    def test_weekly_series_and_dashboard(self):
+        self.call("log_time", date="2026-09-01", start="09:00", end="10:30",
+                  project="website", task="design")
+        self.call("log_time", date="2026-09-03", duration="2h", project="internal")
+        w = self.call("report_weekly", week="2026-09-02")
+        self.assertEqual((w["days"][0], w["days"][6]), ("2026-08-31", "2026-09-06"))
+        rows = {(r["project"], r["task"]): r["day_hours"] for r in w["rows"]}
+        self.assertEqual(rows[("Website", "Design")], [0, 1.5, 0, 0, 0, 0, 0])
+        self.assertEqual(rows[("Internal", None)], [0, 0, 0, 2.0, 0, 0, 0])
+        self.assertEqual((w["total"]["hours"], w["day_totals"][1]), (3.5, 1.5))
+        self.assertEqual(self.call("report_weekly", week="2026-09-02",
+                                   project="internal")["total"]["hours"], 2.0)
+        s = self.call("report_series", {"from": "2026-09-01", "to": "2026-09-03"})
+        self.assertEqual([b["total_hours"] for b in s["buckets"]], [1.5, 0, 2.0])
+        self.assertEqual(s["buckets"][0]["hours"], {"Website": 1.5})
+        wk = self.call("report_series", {"from": "2026-09-01", "to": "2026-09-03"}, by="week")
+        self.assertEqual([(b["start"], b["total_hours"]) for b in wk["buckets"]],
+                         [("2026-08-31", 3.5)])
+        self.assertIn("give a period", self.fails("report_series"))
+        self.call("log_time", date="today", duration="1h", project="internal")
+        d = self.call("get_dashboard")
+        self.assertEqual((d["today"]["hours"], d["today"]["entries"]), (1.0, 1))
+        self.assertEqual(d["week"]["projects"][0]["name"], "Internal")
+        self.assertEqual(len(d["recent"]), 3)
+
+
+class Files(McpCase):
+    """Exports, PDFs, imports and backups: written where asked, never over a file."""
+
+    def count(self, con=None):
+        return (con or self.con).execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+
+    def test_export_report_writes_csv_and_never_overwrites(self):
+        self.call("log_time", date="2026-09-01", start="09:00", end="10:30",
+                  description="Homepage")
+        sept = {"from": "2026-09-01", "to": "2026-09-30"}
+        x = self.call("export_report", sept, path=self.dir)
+        self.assertEqual(os.path.basename(x["path"]),
+                         "DuTemps_detailed_2026-09-01_2026-09-30.csv")
+        with open(x["path"], encoding="utf-8-sig") as f:
+            self.assertIn("Homepage", f.read())
+        self.assertEqual(x["rows"], 1)
+        self.assertIn("already exists", self.fails("export_report", sept, path=x["path"]))
+        w = self.call("export_report", kind="weekly", week="2026-09-03", path=self.dir)
+        self.assertTrue(w["path"].endswith("DuTemps_weekly_week-of-2026-08-31.csv"))
+        s = self.call("export_report", sept, kind="summary", group1="day",
+                      path=os.path.join(self.dir, "out", "s.csv"))
+        self.assertTrue(os.path.isfile(s["path"]))
+        self.assertIn("in memory; give a path", self.fails("export_report", sept))
+
+    def test_import_csv_dry_run_then_import_once(self):
+        dry = self.call("import_csv", path=SAMPLE_CSV, dry_run=True)
+        self.assertTrue(dry["dry_run"])
+        self.assertGreater(dry["added"], 0)
+        self.assertEqual(self.count(), 0)
+        done = self.call("import_csv", path=SAMPLE_CSV)
+        self.assertEqual((done["added"], self.count()), (dry["added"], dry["added"]))
+        self.assertEqual(self.call("import_csv", path=SAMPLE_CSV)["added"], 0)
+        self.assertIn("no file", self.fails("import_csv",
+                                            path=os.path.join(self.dir, "none.csv")))
+
+    def test_backup_database_and_default_folders_beside_the_database(self):
+        self.call("log_time", date="2026-09-01", duration="1h")
+        b = self.call("backup_database", path=os.path.join(self.dir, "copy.db"))
+        with contextlib.closing(sqlite3.connect(b["path"])) as copy:
+            self.assertEqual(self.count(copy), 1)
+        self.assertIn("in memory; give a path", self.fails("backup_database"))
+        con = db.connect(os.path.join(self.dir, "file.db"))
+        self.addCleanup(con.close)
+        self.srv = mcp.Server(con, verbose=False)
+        b = self.call("backup_database", label="before import!")
+        self.assertTrue(os.path.samefile(os.path.dirname(b["path"]),
+                                         os.path.join(self.dir, "backups")))
+        self.assertTrue(b["path"].endswith("-before-import.db"))
+        x = self.call("export_report", period="this_month")
+        self.assertTrue(os.path.samefile(os.path.dirname(x["path"]),
+                                         os.path.join(self.dir, "exports")))
+
+
+    def test_a_file_that_appears_after_the_check_is_never_overwritten(self):
+        self.call("log_time", date="2026-09-01", duration="1h")
+        dest = os.path.join(self.dir, "late.db")
+
+        def taken_meanwhile(con, path, name):
+            with open(dest, "wb") as f:
+                f.write(b"someone else's")
+            return dest
+        with mock.patch.object(mcp, "_out_path", taken_meanwhile):
+            self.assertIn("already exists", self.fails("backup_database", path=self.dir))
+            self.assertIn("already exists", self.fails(
+                "export_report", period="this_month", path=self.dir))
+        with open(dest, "rb") as f:
+            self.assertEqual(f.read(), b"someone else's")
+
+    def test_a_failed_backup_closes_and_removes_its_file(self):
+        dest, real = os.path.join(self.dir, "failed.db"), db.backup
+
+        class Broken:
+            def backup(self, out):
+                raise sqlite3.OperationalError("disk full")
+        with mock.patch.object(mcp, "_out_path", lambda con, path, name: dest), \
+                mock.patch.object(mcp.db, "backup", lambda con, d: real(Broken(), d)):
+            self.fails("backup_database", path=self.dir)
+        self.assertFalse(os.path.exists(dest))     # Windows can't remove an open file
+
+
 class Invoices(McpCase):
     def setUp(self):
         super().setUp()
@@ -500,11 +713,11 @@ class Invoices(McpCase):
         self.assertEqual(listed["invoice_profile"], "saved")
         self.assertIn("already used", self.fails("create_invoice_draft", SEPT))
         self.assertIn("no invoice 'NW-1'", self.fails("get_invoice", invoice="NW-1"))
-        # once the user issues it in the app, it is frozen to these tools
+        # once issued, it is frozen
         invoices.issue(self.con, d["id"])
         msg = self.fails("update_invoice_draft", invoice="NW-2026-09", note="later")
         self.assertIn("only drafts can be edited", msg)
-        self.assertIn("only the user can void it", self.call(
+        self.assertIn("void_invoice", self.call(
             "get_invoice", invoice="NW-2026-09")["frozen"])
 
     def test_draft_defaults_to_today_and_shows_build_problems(self):
@@ -541,6 +754,113 @@ class Invoices(McpCase):
         lines = [ln for s in g["sections"] for grp in s["groups"] for ln in grp["lines"]]
         self.assertEqual(sum(ln["hours"] for ln in lines), g["invoice"]["hours"])
         self.assertEqual(g["invoice"]["net"], NET)
+
+
+    def test_issue_void_and_delete_need_the_number_again(self):
+        d = self.call("create_invoice_draft", SEPT)
+        self.assertIn("confirm='NW-2026-09'", self.fails(
+            "issue_invoice", invoice=d["id"], confirm="yes"))
+        self.assertEqual(self.call("get_invoice", invoice=d["id"])["status"], "draft")
+        pdf = self.call("save_invoice_pdf", invoice="NW-2026-09", path=self.dir)
+        self.assertEqual(pdf["status"], "draft")
+        with open(pdf["path"], "rb") as f:
+            self.assertEqual(f.read(5), b"%PDF-")
+        i = self.call("issue_invoice", invoice="nw-2026-09", confirm=" NW-2026-09 ")
+        self.assertEqual((i["status"], i["editable"], i["invoice"]["net"]),
+                         ("issued", False, NET))
+        self.fails("delete_invoice_draft", invoice=d["id"], confirm="NW-2026-09")
+        self.assertIn("already issued", self.fails(
+            "issue_invoice", invoice=d["id"], confirm="NW-2026-09"))
+        v = self.call("void_invoice", invoice=d["id"], confirm="NW-2026-09",
+                      reason="wrong period")
+        self.assertEqual(v["status"], "void")
+        t = self.call("create_invoice_draft", {**SEPT, "number": "NW-2026-09b"})
+        self.assertEqual(self.call("delete_invoice_draft", invoice=t["id"],
+                                   confirm="NW-2026-09b")["deleted"], "NW-2026-09b")
+        self.assertIn("no invoice", self.fails("get_invoice", invoice="NW-2026-09b"))
+
+    def test_issue_checks_and_builds_inside_its_write_transaction(self):
+        d = self.call("create_invoice_draft", SEPT)
+        seen, real = [], invoices.render
+
+        def render(*a, **k):
+            seen.append(self.con.in_transaction)
+            return real(*a, **k)
+        with mock.patch.object(invoices, "render", render):
+            self.call("issue_invoice", invoice=d["id"], confirm="NW-2026-09")
+        self.assertEqual(seen, [True])
+
+    def test_the_confirmed_number_is_checked_where_the_invoice_changes(self):
+        d = self.call("create_invoice_draft", SEPT)
+        real = mcp._find_invoice
+
+        def renamed_meanwhile(con, v):
+            con.execute("UPDATE invoices SET number = 'NW-2026-09' WHERE id = ?", (v,))
+            r = dict(real(con, v))
+            con.execute("UPDATE invoices SET number = 'NW-2026-09-B' WHERE id = ?",
+                        (r["id"],))
+            return r
+        with mock.patch.object(mcp, "_find_invoice", renamed_meanwhile):
+            for tool in ("issue_invoice", "delete_invoice_draft"):
+                self.assertIn("is now NW-2026-09-B, not NW-2026-09", self.fails(
+                    tool, invoice=d["id"], confirm="NW-2026-09"))
+        self.assertEqual(self.call("get_invoice", invoice=d["id"])["status"], "draft")
+        self.call("issue_invoice", invoice=d["id"], confirm="NW-2026-09-B")
+        with self.assertRaises(core.Invalid):
+            invoices.void(self.con, d["id"], "", number="NW-2026-09")
+        self.assertEqual(self.call("get_invoice", invoice=d["id"])["status"], "issued")
+
+    def test_an_invoice_number_never_makes_folders_in_a_file_name(self):
+        d = self.call("create_invoice_draft", {**SEPT, "number": "x/../../NW:09"})
+        out = os.path.join(self.dir, "out")
+        os.makedirs(out)
+        pdf = self.call("save_invoice_pdf", invoice=d["id"], path=out)
+        self.assertTrue(os.path.samefile(os.path.dirname(pdf["path"]), out))
+        self.assertEqual(os.path.basename(pdf["path"]), "Invoice_x-..-..-NW-09 (draft).pdf")
+        self.assertEqual(pdf["number"], "x/../../NW:09")
+
+    def test_a_settings_change_keeps_an_edit_saved_meanwhile(self):
+        self.call("create_project", name="Training", client="Northwind Traders")
+        self.call("create_task", project="Training", name="Workshops")
+        real, in_tx = invoices.save_profile, []
+
+        def app_saved_first(con, b, path=None):
+            # the app saves a new email after the tool is called, before it saves
+            p = invoices.load_profile()
+            p["issuer"]["email"] = "new@example.com"
+            with open(invoices.PROFILE_PATH, "w", encoding="utf-8") as f:
+                json.dump(p, f)
+
+            def patch(cur):
+                in_tx.append(con.in_transaction)
+                return b(cur)
+            return real(con, patch, path)
+        with mock.patch.object(invoices, "save_profile", app_saved_first):
+            u = self.call("update_invoice_settings", max_hours=0)
+        self.assertEqual((u["changed"], in_tx), (["max_hours"], [True]))
+        p = invoices.load_profile()
+        self.assertEqual((p["max_hours"], p["issuer"]["email"]), (0, "new@example.com"))
+
+    def test_invoice_settings_read_preview_and_change(self):
+        # every task in the example's sections must exist to save them
+        self.call("create_project", name="Training", client="Northwind Traders")
+        self.call("create_task", project="Training", name="Workshops")
+        g = self.call("get_invoice_settings")["settings"]
+        self.assertEqual((g["max_hours"], g["client"]["name"]), (40, "Northwind Traders"))
+        pv = self.call("preview_invoice_settings", max_hours=0, path=self.dir)
+        self.assertFalse(pv["saved"])
+        with open(pv["path"], "rb") as f:
+            self.assertEqual(f.read(5), b"%PDF-")
+        self.assertEqual(self.call("get_invoice_settings")["settings"]["max_hours"], 40)
+        u = self.call("update_invoice_settings", max_hours=0, issuer={"phone": "555-0199"})
+        self.assertEqual(u["changed"], ["issuer", "max_hours"])
+        self.assertEqual(u["settings"]["issuer"], {**g["issuer"], "phone": "555-0199"})
+        self.assertEqual(invoices.load_profile()["max_hours"], 0)
+        self.assertTrue(os.listdir(os.path.join(self.dir, "backups")))
+        self.assertIn("must be an object", self.fails("update_invoice_settings",
+                                                       client="Acme"))
+        self.assertIn("nothing to change", self.fails("update_invoice_settings"))
+        self.assertIn("at least 0", self.fails("update_invoice_settings", rate=-1))
 
 
 class DaylightSaving(McpCase):

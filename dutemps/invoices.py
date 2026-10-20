@@ -10,7 +10,8 @@ and re-rendered later without consulting the time entries again:
   net           = subtotal + credits + retainer, never below zero
 
 The monthly maximum and the "additional amount authorized" rows are
-informational: the invoice total is the subtotal.
+informational: the invoice total is the subtotal. A maximum of 0 leaves
+them off.
 """
 import json
 import os
@@ -384,14 +385,15 @@ def _billing(p, top, inv):
     p.text(M, top, "Billing summary", "B", 9, INK)
     rows = [("Total hours", hrs(inv["hours"]), "R", INK),
             ("Rate per hour", money(inv["rate"]), "R", INK),
-            ("Subtotal", money(inv["subtotal"]), "R", INK),
-            (f"Maximum billable amount per month ({inv['max_hours']:g} h)",
-             money(inv["max_amount"]), "R", MUTED),
-            ("Additional amount authorized for current month",
-             money(inv["additional"]), "R", MUTED),
-            ("Total maximum billable amount for current month",
-             money(inv["total_max"]), "R", MUTED),
-            ("Total invoice", money(inv["total"]), "B", INK)]
+            ("Subtotal", money(inv["subtotal"]), "R", INK)]
+    if inv["max_hours"]:
+        rows += [(f"Maximum billable amount per month ({inv['max_hours']:g} h)",
+                  money(inv["max_amount"]), "R", MUTED),
+                 ("Additional amount authorized for current month",
+                  money(inv["additional"]), "R", MUTED),
+                 ("Total maximum billable amount for current month",
+                  money(inv["total_max"]), "R", MUTED)]
+    rows.append(("Total invoice", money(inv["total"]), "B", INK))
     rows += [(c["label"], money(c["amount"]), "R", INK) for c in inv["credits"]]
     if inv["retainer"]:
         rows.append((inv["retainer"]["label"], money(inv["retainer"]["amount"]), "R", INK))
@@ -655,47 +657,61 @@ def update(con, id_, b):
     return get(con, id_)
 
 
-def delete(con, id_):
-    r = _get_row(con, id_)
-    if r["status"] != "draft":
-        raise core.Invalid(f"{r['number']} is {r['status']}; void it instead")
+def _expect(r, number):
+    """Refuse when the invoice is no longer the number the caller confirmed
+    (a draft renamed meanwhile). Checked inside the changing transaction."""
+    if number is not None and r["number"] != number:
+        raise core.Invalid(f"invoice {r['id']} is now {r['number']}, not {number}; "
+                           "nothing was changed")
+
+
+def delete(con, id_, number=None):
     with db.tx(con):
+        r = _get_row(con, id_)
+        _expect(r, number)
+        if r["status"] != "draft":
+            raise core.Invalid(f"{r['number']} is {r['status']}; void it instead")
         con.execute("DELETE FROM invoices WHERE id = ?", (id_,))
         db.audit(con, "delete", "invoice", id_, {k: r[k] for k in FIELDS}, None)
     return {"deleted": id_}
 
 
-def issue(con, id_):
-    r = _get_row(con, id_)
-    if r["status"] != "draft":
-        raise core.Invalid(f"{r['number']} is already {r['status']}")
-    if not os.path.exists(PROFILE_PATH):
-        raise core.Invalid("these invoices still use the example business and client; "
-                           "save your own on Invoice settings before issuing")
-    profile = with_client_id(con, load_profile())     # stored with the invoice
-    if "id" not in profile["client"]:
-        raise core.Invalid(f"can't tell which client {profile['client']['name'].strip()!r} "
-                           "is; pick it again on Invoice settings and save")
-    # Another client's invoice may cover the same days.
-    mine = _client_ident(profile)
-    for o in con.execute(
-            "SELECT number, period_from, period_to, profile FROM invoices "
-            "WHERE status = 'issued' AND id <> ? AND period_from <= ? AND period_to >= ?",
-            (id_, r["period_to"], r["period_from"])).fetchall():
-        theirs = with_client_id(con, json.loads(o["profile"] or "{}"))
-        name = (theirs.get("client") or {}).get("name") or ""
-        if _client_ident(theirs)[0] == "name" and name.strip():
-            raise core.Invalid(f"{o['number']} bills {o['period_from']} to {o['period_to']} "
-                               f"for {name.strip()!r}, which isn't exactly one of your "
-                               "clients now, so it may be this client; void it or "
-                               "change the period")
-        if _client_ident(theirs) == mine:
-            raise core.Invalid(f"{o['number']} already bills {o['period_from']} "
-                               f"to {o['period_to']}; void it or change the period")
-    inv = _build_row(con, r, profile)
-    data = render(inv, profile)
-    now = db.now_utc()
+def issue(con, id_, number=None):
+    # One write transaction from the first read to the last write, so an
+    # invoice issued from another process (the app and an agent) can't slip
+    # between the overlap check and the freeze.
     with db.tx(con):
+        r = _get_row(con, id_)
+        _expect(r, number)
+        if r["status"] != "draft":
+            raise core.Invalid(f"{r['number']} is already {r['status']}")
+        if not os.path.exists(PROFILE_PATH):
+            raise core.Invalid("these invoices still use the example business and "
+                               "client; save your own on Invoice settings before issuing")
+        profile = with_client_id(con, load_profile())     # stored with the invoice
+        if "id" not in profile["client"]:
+            raise core.Invalid(f"can't tell which client "
+                               f"{profile['client']['name'].strip()!r} is; pick it again "
+                               "on Invoice settings and save")
+        # Another client's invoice may cover the same days.
+        mine = _client_ident(profile)
+        for o in con.execute(
+                "SELECT number, period_from, period_to, profile FROM invoices "
+                "WHERE status = 'issued' AND id <> ? AND period_from <= ? "
+                "AND period_to >= ?", (id_, r["period_to"], r["period_from"])).fetchall():
+            theirs = with_client_id(con, json.loads(o["profile"] or "{}"))
+            name = (theirs.get("client") or {}).get("name") or ""
+            if _client_ident(theirs)[0] == "name" and name.strip():
+                raise core.Invalid(f"{o['number']} bills {o['period_from']} to "
+                                   f"{o['period_to']} for {name.strip()!r}, which isn't "
+                                   "exactly one of your clients now, so it may be this "
+                                   "client; void it or change the period")
+            if _client_ident(theirs) == mine:
+                raise core.Invalid(f"{o['number']} already bills {o['period_from']} "
+                                   f"to {o['period_to']}; void it or change the period")
+        inv = _build_row(con, r, profile)
+        data = render(inv, profile)
+        now = db.now_utc()
         con.execute("UPDATE invoices SET status = 'issued', snapshot = ?, profile = ?, "
                     "pdf = ?, issued_utc = ?, updated_utc = ? WHERE id = ?",
                     (json.dumps(inv, ensure_ascii=False),
@@ -706,13 +722,14 @@ def issue(con, id_):
     return get(con, id_)
 
 
-def void(con, id_, reason=""):
-    r = _get_row(con, id_)
-    if r["status"] != "issued":
-        raise core.Invalid(f"{r['number']} is {r['status']}; only issued invoices "
-                           "can be voided")
+def void(con, id_, reason="", number=None):
     now = db.now_utc()
     with db.tx(con):
+        r = _get_row(con, id_)
+        _expect(r, number)
+        if r["status"] != "issued":
+            raise core.Invalid(f"{r['number']} is {r['status']}; only issued invoices "
+                               "can be voided")
         con.execute("UPDATE invoices SET status = 'void', voided_utc = ?, updated_utc = ? "
                     "WHERE id = ?", (now, now, id_))
         db.audit(con, "void", "invoice", id_, {"status": "issued"},
@@ -889,7 +906,8 @@ def clean_profile(con, b, current=None):
     if len(pdf.wrap(p["intro"], R - M, "I", 8)) > MAX_INTRO_LINES:
         raise core.Invalid(f"Introduction is limited to {MAX_INTRO_LINES} printed lines")
     p["rate"] = _num(b.get("rate"), "Hourly rate", 0, 10000)
-    p["max_hours"] = _num(b.get("max_hours"), "Monthly maximum hours", 0, 744)
+    mh = b.get("max_hours")
+    p["max_hours"] = 0 if mh in (0, "0") else _num(mh, "Monthly maximum hours (0 for none)", 0, 744)
     p["remittance"] = _lines(b.get("remittance"), "Remittance lines", "remittance",
                              required=False, most=6)
     rl = _txt(b.get("retainer_label") or "Less: Retainer Fee Paid on {date}",
@@ -987,34 +1005,42 @@ def _pct_num(v, ci):
 
 
 def save_profile(con, b, path=None):
+    """Validate and save the profile, keeping a copy of the old one. `b` is
+    the whole profile, or a function from the current one to it (a partial
+    change). The read, the change and the write happen under the database's
+    write lock, so a save made meanwhile from another process (the app and an
+    agent) is built on, not silently undone."""
     path = path or PROFILE_PATH
-    before = load_profile(path)
-    p = clean_profile(con, b, before)
-    if p == before:
-        return p
-    # Keep the old file first, and check the copy before replacing it. The
-    # first save replaces the example, which has nothing to keep.
-    if os.path.exists(path):
-        folder = os.path.join(os.path.dirname(path), "backups")
-        os.makedirs(folder, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        bak, n = os.path.join(folder, f"invoice_profile-{stamp}.json"), 2
-        while os.path.exists(bak):              # two saves in one second
-            bak, n = os.path.join(folder, f"invoice_profile-{stamp}-{n}.json"), n + 1
-        with open(path, "rb") as f:
-            old = f.read()
-        with open(bak, "wb") as f:
-            f.write(old)
-        with open(bak, "rb") as f:
-            if f.read() != old:
-                raise core.Invalid(f"backup {bak} did not verify; profile not saved")
-    else:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(p, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
     with db.tx(con):
+        before = load_profile(path)
+        p = clean_profile(con, b(before) if callable(b) else b, before)
+        if p == before:
+            return p
+        # Keep the old file first, and check the copy before replacing it. The
+        # first save replaces the example, which has nothing to keep.
+        if os.path.exists(path):
+            folder = os.path.join(os.path.dirname(path), "backups")
+            os.makedirs(folder, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            with open(path, "rb") as f:
+                old = f.read()
+            bak, n = os.path.join(folder, f"invoice_profile-{stamp}.json"), 2
+            while True:
+                try:
+                    with open(bak, "xb") as f:      # never over an older copy
+                        f.write(old)
+                    break
+                except FileExistsError:             # two saves in one second
+                    bak, n = os.path.join(folder, f"invoice_profile-{stamp}-{n}.json"), n + 1
+            with open(bak, "rb") as f:
+                if f.read() != old:
+                    raise core.Invalid(f"backup {bak} did not verify; profile not saved")
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(p, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
         db.audit(con, "update", "invoice_profile", None, before, p)
     return p
 
