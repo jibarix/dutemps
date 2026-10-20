@@ -229,7 +229,9 @@ def db_dir(con):
 def backup(con, dest):
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
     out = sqlite3.connect(dest)
-    with out:
-        con.backup(out)
-    out.close()
+    try:            # closed even on failure, so the caller can remove the file
+        with out:
+            con.backup(out)
+    finally:
+        out.close()
     return dest

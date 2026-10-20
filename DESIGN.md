@@ -92,8 +92,12 @@ Out:
   - Tools take names (case-insensitive) or ids, and local dates and times. An
     ambiguous or unknown name is an error listing the candidates, never a
     guess.
-  - Issuing and voiding stay human actions in the app. Agents can preview,
-    create and edit drafts only.
+  - Everything the app does has a tool, so an agent can do whatever the
+    user asks (changed 2026-10-20; until then issuing, voiding and the
+    invoice settings were left to the app). Issuing, voiding and deleting an
+    invoice can't be undone, so their tools take the invoice number a second
+    time as `confirm`. Files an agent writes go to the path it gives or
+    beside the database, and never replace an existing file.
   - It can share the database with the running app: WAL and a 5 s busy
     timeout let the two processes take turns. A change that depends on the
     current row (moving an entry and keeping its length, switching timers)
@@ -115,4 +119,4 @@ Out:
 | Recovery | A delete can be undone from the audit log | `tests/test_core.py` |
 | Invoice | The sample month with the example profile: 71.25 h, credits −$332.50 and −$687.50, net $5,605.00 after a $500 retainer; the PDF renders byte-identically twice | `tests/test_invoices.py` |
 | Invoice lifecycle | A draft follows the entries; issuing stores the snapshot and PDF, which the database refuses to change or delete; an issued period can't be invoiced twice; the example profile can't be issued | `tests/test_invoices.py` |
-| MCP server | The handshake and errors follow JSON-RPC; no tool is named for issuing or voiding; timer, entries, reports and drafts work by name; stdout carries only protocol lines | `tests/test_mcp.py` |
+| MCP server | The handshake and errors follow JSON-RPC; every app action has a tool; issue, void and delete need the number as confirm; files never overwrite; stdout carries only protocol lines | `tests/test_mcp.py` |

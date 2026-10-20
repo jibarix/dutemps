@@ -19,10 +19,11 @@ for their own setup and is never committed.
   nearest 0.25 h with a 0.25 h minimum. `tests/test_core.py` checks the sample
   month against a calculation made straight from the CSV.
 - `dutemps/mcp.py` is the MCP server (`python -m dutemps mcp`, DESIGN D8): a
-  hand-written JSON-RPC stdio loop whose tools call core, reports and
-  invoices. stdout carries protocol messages only; log to stderr. No tool may
-  issue or void an invoice, delete one, or change the invoice profile; keep
-  it that way. `tests/test_mcp.py` covers it.
+  hand-written JSON-RPC stdio loop whose tools call core, reports, exports,
+  importers and invoices. stdout carries protocol messages only; log to
+  stderr. Everything the app can do has a tool: a new feature gets its tool
+  in the same change. Issuing, voiding and deleting an invoice need the
+  invoice number again as `confirm`. `tests/test_mcp.py` covers it.
 - Tests: `python -m unittest discover -s tests` from this folder. They use
   `tests/fixtures/` and the example profile. Any new fixture must be made up:
   no real names, clients, addresses or amounts.
