@@ -95,7 +95,8 @@ invoices. The import is idempotent: rows already imported are skipped.
 
 ## Invoices
 
-Invoice lines group billable time by local date, project and task. Each
+Invoice lines group billable time by local date, project and task (and by
+requester, when the profile has requesters). Each
 group is rounded to the nearest quarter hour, with a minimum of 0.25 h. That
 is why an invoice total can differ slightly from the per-entry amounts in
 Reports.
@@ -109,7 +110,12 @@ the same from month to month:
 - **sections**, which list the (project, task) pairs they bill;
 - **credits**, a percentage off one project, one section, or one group
   inside a section (for example, a section split into two groups where
-  only one of them gets the credit).
+  only one of them gets the credit);
+- **requesters** (optional), the people who ask you for work. Each is a tag
+  you put on the entries they asked for, and can be the usual requester of
+  some projects, whose untagged time then counts as theirs. With requesters,
+  invoice lines are also split by who asked, the detail has a Requested by
+  column, and the summary page shows hours by requester.
 
 Every billable (project, task) must belong to a section. Saving checks that
 each string fits where the PDF prints it, and keeps a copy of the old profile

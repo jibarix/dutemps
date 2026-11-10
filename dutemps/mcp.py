@@ -1599,7 +1599,8 @@ def void_invoice(con, a):
 # --- invoice settings -------------------------------------------------------------------
 
 PROFILE_KEYS = ("issuer", "client", "agreement", "terms", "intro", "rate", "max_hours",
-                "remittance", "retainer_label", "sections", "credits", "credit_note")
+                "remittance", "retainer_label", "sections", "credits", "credit_note",
+                "requesters")
 MERGED = ("issuer", "client", "credit_note")       # only the keys given change
 OBJECT = {"type": "object"}
 PROFILE = {
@@ -1625,6 +1626,12 @@ PROFILE = {
                   "{project: name}, {section: key} or {group: key}.", OBJECT),
     "credit_note": {**OBJECT, "description": "The note about credits at the foot: head "
                     "and text."},
+    "requesters": _a("All requesters, replacing them ([] for none): tag (an existing "
+                     "tag's name, printed as who asked) and projects (whose untagged "
+                     "time they usually ask for). With requesters, invoice lines are "
+                     "split by who asked: an entry's requester tag, else its project's "
+                     "usual requester. The PDF prints a Requested by column and hours "
+                     "by requester.", OBJECT),
 }
 
 

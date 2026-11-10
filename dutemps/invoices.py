@@ -106,12 +106,23 @@ def for_client(lines, profile):
     return kept, left
 
 
+def requester_map(profile):
+    """The profile's requesters as reports.requester_of takes them, or None
+    when it names none (lines are then not split by who asked)."""
+    req = profile.get("requesters") or []
+    if not req:
+        return None
+    return {"tags": {r["tag"].casefold(): r["tag"] for r in req},
+            "defaults": {pj: r["tag"] for r in req for pj in r.get("projects") or []}}
+
+
 def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
           retainer_label="", credit_pcts=None):
     """credit_pcts overrides the profile's percentages, in order."""
     rate = float(profile["rate"])
     profile = with_client_id(con, profile)
-    got = reports.invoice_lines(con, {"from": d_from, "to": d_to})["lines"]
+    req = requester_map(profile)
+    got = reports.invoice_lines(con, {"from": d_from, "to": d_to}, req)["lines"]
     got, left_out = for_client(got, profile)
     if not got:
         who = (profile.get("client") or {}).get("name") or "time with no client"
@@ -122,6 +133,10 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
     if mixed:
         raise core.Invalid("entries at different rates on one line: " + ", ".join(
             f"{l['date']} {l['project']} / {l['task'] or '(no task)'}" for l in mixed))
+    clash = [l for l in got if l.get("requester_conflict")]
+    if clash:
+        raise core.Invalid("entries tagged with more than one requester: " + ", ".join(
+            f"{l['date']} {l['project']} / {l['task'] or '(no task)'}" for l in clash))
     odd = sorted({l["rate"] for l in got if l["rate"] != rate})
     if odd:
         raise core.Invalid(f"lines billed at {odd}, not the invoice rate {rate}")
@@ -148,6 +163,8 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
     for l in got:
         ln = {"date": l["date"], "project": l["project"], "task": l["task"],
               "description": l["description"], "hours": l["hours"]}
+        if req:
+            ln["requested_by"] = l["requested_by"]
         si, gi = where[(l["project"], l["task"])]
         sections[si]["groups"][gi]["lines"].append(ln)
         sections[si]["groups"][gi]["hours"] += l["hours"]
@@ -187,8 +204,12 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
 
     by_project = {}
     by_day = {}
+    by_requester = {}
     for l in lines:
         by_project[l["project"]] = by_project.get(l["project"], 0) + l["hours"]
+        if req:
+            who = l["requested_by"] or NO_REQUESTER
+            by_requester[who] = by_requester.get(who, 0) + l["hours"]
         day = by_day.setdefault(l["date"], {})
         day[l["project"]] = day.get(l["project"], 0) + l["hours"]
     return {
@@ -202,8 +223,13 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
         "net": max(0.0, net),
         "by_project": sorted(by_project.items(), key=lambda kv: (-kv[1], kv[0])),
         "by_day": by_day,
+        "by_requester": sorted(by_requester.items(), key=lambda kv: (
+            kv[0] == NO_REQUESTER, -kv[1], kv[0])),
         "left_out": sorted(left_out.items()),
     }
+
+
+NO_REQUESTER = "Not specified"
 
 
 def _pct(p):
@@ -323,11 +349,13 @@ def _summary(p, inv, prof, colors):
         p.text(x + 10, top + 34, val, "B", 15, WHITE if last else INK)
         p.text(x + 10, top + 45, sub, "R", 6.5, "#C7D2FE" if last else MUTED)
 
-    y = _charts(p, top + ch + 24, inv, colors)
+    rows = 3 + 3 * bool(inv["max_hours"]) + 1 + len(inv["credits"]) + bool(inv["retainer"])
+    room = BOTTOM - (22 + 8 + rows * 14.5 + 24)       # where the billing summary must start
+    y = _charts(p, top + ch + 24, inv, colors, room)
     return _billing(p, y + 22, inv)
 
 
-def _charts(p, top, inv, colors):
+def _charts(p, top, inv, colors, room=BOTTOM):
     # -- hours by day, stacked by project --
     x0, x1 = M + 18, 372.0
     p.text(M, top, "Hours by day", "B", 9, INK)
@@ -370,19 +398,30 @@ def _charts(p, top, inv, colors):
         lx += wdt
     chart_end = ly + 4
 
-    # -- hours by project --
+    # -- hours by project, then by requester when the invoice has them --
     bx, bxr = 396.0, R
-    p.text(bx, top, "Hours by project", "B", 9, INK)
-    y = top + 24
     total = inv["hours"]
-    for pr, h in inv["by_project"]:
-        hs = f"{hrs(h)} h"
-        p.text(bx, y, pr, "R", 7.5, INK)
-        p.text(bxr, y, hs, "B", 7.5, INK, "right")
-        p.text(bxr - pdf.width(hs, "B", 7.5) - 6, y, f"{h / total:.0%}", "R", 7, MUTED, "right")
-        p.rect(bx, y + 5, bxr - bx, 5, fill=SOFT, r=2.5)
-        p.rect(bx, y + 5, max(5, (bxr - bx) * h / total), 5, fill=colors[pr], r=2.5)
-        y += 23
+    blocks = [("Hours by project", [(pr, h, colors[pr]) for pr, h in inv["by_project"]])]
+    if inv.get("by_requester"):
+        blocks.append(("Hours by requester", [(w, h, ACCENT) for w, h in inv["by_requester"]]))
+    n = sum(len(b) for _, b in blocks)
+    # Rows close up when there are many, so the billing summary keeps its page.
+    step = max(14.0, min(23.0, (room - top - 24 * len(blocks) - 4) / n))
+    y = top
+    for bi, (head, bars) in enumerate(blocks):
+        if bi:
+            y += 4
+        p.text(bx, y, head, "B", 9, INK)
+        y += 24 if step >= 20 else 18
+        for name, h, col in bars:
+            hs = f"{hrs(h)} h"
+            p.text(bx, y, name, "R", 7.5, INK)
+            p.text(bxr, y, hs, "B", 7.5, INK, "right")
+            p.text(bxr - pdf.width(hs, "B", 7.5) - 6, y, f"{h / total:.0%}", "R", 7, MUTED, "right")
+            bar = 5 if step >= 20 else 3
+            p.rect(bx, y + 4, bxr - bx, bar, fill=SOFT, r=bar / 2)
+            p.rect(bx, y + 4, max(bar, (bxr - bx) * h / total), bar, fill=col, r=bar / 2)
+            y += step
     return max(chart_end, y - 8)
 
 
@@ -440,14 +479,17 @@ def _credit_note(p, y, inv, prof):
 
 COL_DATE, COL_PROJ, COL_DESC = M + 4, M + 52, M + 140
 DESC_W = R - 52 - COL_DESC
+COL_REQ, REQ_W = M + 140, 80          # with requesters, the description moves right
+COL_DESC_REQ = COL_REQ + REQ_W + 8
+DESC_W_REQ = R - 52 - COL_DESC_REQ
 
 
 class _Flow:
     """A y cursor that starts a new page, with the table header, when the
     next block would cross the bottom margin."""
 
-    def __init__(self, doc, title):
-        self.doc, self.title = doc, title
+    def __init__(self, doc, title, requesters=False):
+        self.doc, self.title, self.requesters = doc, title, requesters
         self.page, self.y = None, 0
         self.new(first=True)
 
@@ -463,7 +505,9 @@ class _Flow:
     def header(self):
         p, y = self.page, self.y
         p.rect(M, y, R - M, 16, fill=SOFT)
-        for x, s in ((COL_DATE, "DATE"), (COL_PROJ, "PROJECT"), (COL_DESC, "WORK DESCRIPTION")):
+        cols = ((COL_DATE, "DATE"), (COL_PROJ, "PROJECT"),
+                (COL_REQ, "REQUESTED BY"), (COL_DESC_REQ, "WORK DESCRIPTION"))             if self.requesters else             ((COL_DATE, "DATE"), (COL_PROJ, "PROJECT"), (COL_DESC, "WORK DESCRIPTION"))
+        for x, s in cols:
             p.text(x, y + 10.5, s, "B", 6.5, MUTED)
         p.text(R - 4, y + 10.5, "HOURS", "B", 6.5, MUTED, "right")
         self.y += 22
@@ -474,7 +518,9 @@ class _Flow:
 
 
 def _detail(doc, inv, prof, note_done):
-    f = _Flow(doc, "Detail of services")
+    req = bool(inv.get("by_requester"))
+    desc_x, desc_w = (COL_DESC_REQ, DESC_W_REQ) if req else (COL_DESC, DESC_W)
+    f = _Flow(doc, "Detail of services", req)
     last_group = inv["sections"][-1]["groups"][-1]
     for s in inv["sections"]:
         f.need(40)
@@ -493,8 +539,9 @@ def _detail(doc, inv, prof, note_done):
                 f.page.text(M, f.y + 8, g["label"], "B", 8, INK)
                 f.y += 14
             for i, ln in enumerate(g["lines"]):
-                wrapped = pdf.wrap(ln["description"] or "", DESC_W, "R", 7.5)
-                h = max(1, len(wrapped)) * 9.5 + 6
+                wrapped = pdf.wrap(ln["description"] or "", desc_w, "R", 7.5)
+                who = pdf.wrap(ln.get("requested_by") or "", REQ_W, "R", 7.5) if req else []
+                h = max(1, len(wrapped), len(who)) * 9.5 + 6
                 tail = 0 if i < len(g["lines"]) - 1 else 22 + (26 if g is last_group else 0)
                 f.need(h + tail)
                 p, y = f.page, f.y
@@ -502,8 +549,10 @@ def _detail(doc, inv, prof, note_done):
                     p.rect(M, y, R - M, h, fill=ZEBRA)
                 p.text(COL_DATE, y + 10, nice_date(ln["date"], False), "R", 7.5, INK)
                 p.text(COL_PROJ, y + 10, ln["project"], "R", 7.5, INK)
+                for k, w in enumerate(who):
+                    p.text(COL_REQ, y + 10 + k * 9.5, w, "R", 7.5, INK)
                 for k, w in enumerate(wrapped):
-                    p.text(COL_DESC, y + 10 + k * 9.5, w, "R", 7.5, INK)
+                    p.text(desc_x, y + 10 + k * 9.5, w, "R", 7.5, INK)
                 p.text(R - 4, y + 10, hrs(ln["hours"]), "R", 7.5, INK, "right")
                 f.y += h
             f.need(20)
@@ -759,8 +808,10 @@ def get(con, id_, lines=False):
         # Entries stay editable after issue. Say so when they no longer add up
         # to what was sent, rather than let the reports and the invoice differ
         # silently.
-        live = reports.invoice_lines(con, {"from": r["period_from"], "to": r["period_to"]})
-        mine = for_client(live["lines"], with_client_id(con, json.loads(r["profile"])))[0]
+        stored = with_client_id(con, json.loads(r["profile"]))
+        live = reports.invoice_lines(con, {"from": r["period_from"], "to": r["period_to"]},
+                                     requester_map(stored))
+        mine = for_client(live["lines"], stored)[0]
         out["live_hours"] = sum(l["hours"] for l in mine)
     if lines and "invoice" in out:
         out["sections"] = inv["sections"]
@@ -843,8 +894,8 @@ FIT = {"issuer.name": ("B", 19, 330), "issuer.contact": ("R", 8, 330),
        "remittance": ("R", 7.5, R - M), "heading": ("B", 9.5, R - M),
        "group.label": ("B", 8, R - M), "group.subtotal": ("B", 7.5, 400),
        "credit.label": ("R", 8, 430), "retainer_label": ("R", 8, 430),
-       "credit_note.head": ("B", 7.5, R - M)}
-MAX_ADDRESS, MAX_INTRO_LINES, MAX_CREDITS = 6, 3, 4
+       "credit_note.head": ("B", 7.5, R - M), "requester": ("R", 7.5, 120)}
+MAX_ADDRESS, MAX_INTRO_LINES, MAX_CREDITS, MAX_REQUESTERS = 6, 3, 4, 8
 
 
 def _txt(v, where, required=True, fit=None):
@@ -1012,11 +1063,52 @@ def clean_profile(con, b, current=None):
         credits.append({"label": label, "pct": _pct_num(c.get("pct"), ci),
                         "scope": {kind: sc[kind]}})
     p["credits"] = credits
+    reqs = _requesters(con, b["requesters"] if "requesters" in b
+                       else p.get("requesters"), known)
+    if reqs:
+        p["requesters"] = reqs
+    else:
+        p.pop("requesters", None)
     n = b.get("credit_note") or {}
     p["credit_note"] = {"head": _txt(n.get("head"), "Credit note heading", bool(credits),
                                      "credit_note.head"),
                         "text": _txt(n.get("text"), "Credit note text", bool(credits))}
     return p
+
+
+def _requesters(con, v, known):
+    """Who can ask for work: each a tag (entries carrying it were asked for
+    by that person) and the projects whose untagged time they usually ask for."""
+    if not v:
+        return []
+    if not isinstance(v, list):
+        raise core.Invalid("requesters must be a list")
+    if len(v) > MAX_REQUESTERS:
+        raise core.Invalid(f"at most {MAX_REQUESTERS} requesters fit on the invoice")
+    tags = {r["name"].casefold(): r["name"] for r in con.execute("SELECT name FROM tags")}
+    out, usual = [], {}
+    for i, r in enumerate(v, 1):
+        r = r if isinstance(r, dict) else {"tag": r}
+        name = _txt(r.get("tag"), f"Requester {i}", fit="requester")
+        if name.casefold() not in tags:
+            raise core.Invalid(f"Requester {i}: no tag named {name!r}; create the tag first")
+        name = tags[name.casefold()]
+        if any(o["tag"] == name for o in out):
+            raise core.Invalid(f"{name} is listed twice as a requester")
+        if name == NO_REQUESTER:
+            raise core.Invalid(f"{NO_REQUESTER!r} is kept for time nobody is named for")
+        projects = []
+        for pj in r.get("projects") or []:
+            pj = str(pj or "").strip()
+            if pj not in known:
+                raise core.Invalid(f"Requester {name}: no project named {pj!r}")
+            if pj in usual:
+                raise core.Invalid(f"{pj} can have one usual requester, not both "
+                                   f"{usual[pj]} and {name}")
+            usual[pj] = name
+            projects.append(pj)
+        out.append({"tag": name, "projects": projects})
+    return out
 
 
 def _pct_num(v, ci):

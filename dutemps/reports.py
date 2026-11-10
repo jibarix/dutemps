@@ -159,9 +159,21 @@ def weekly(con, f, monday):
     return {"days": days, "rows": out, "totals": totals, "total": sum(totals)}
 
 
-def invoice_lines(con, f):
+def requester_of(entry, requesters):
+    """Who asked for an entry: its requester tag, else its project's usual
+    requester, else "". None when it carries two requester tags. requesters
+    is {"tags": {casefolded tag: name}, "defaults": {project: name}}."""
+    hits = {requesters["tags"][t["name"].casefold()] for t in entry["tags"]
+            if t["name"].casefold() in requesters["tags"]}
+    if len(hits) > 1:
+        return None
+    return hits.pop() if hits else requesters["defaults"].get(entry["project"] or "", "")
+
+
+def invoice_lines(con, f, requesters=None):
     """One line per local date x client x project x task, raw hours rounded
-    with the quarter-hour rule."""
+    with the quarter-hour rule. With requesters (see requester_of), also per
+    requester, so each line has one requested_by."""
     s = db.settings(con)
     tz = s["timezone"]
     lines = collections.OrderedDict()
@@ -169,11 +181,19 @@ def invoice_lines(con, f):
                                order="ASC"):
         d = local(e["start_utc"], tz).date().isoformat()
         k = (d, e["client_id"] or 0, e["project"] or "", e["task"] or "")
+        who = None
+        if requesters:
+            who = requester_of(e, requesters)
+            k += ("\uffff" if who is None else who,)     # a clash sorts last
         ln = lines.setdefault(k, {"date": d, "project": k[2], "task": k[3],
                                   "client": e["client"] or "",
                                   "client_id": e["client_id"], "descriptions": [],
                                   "seconds": 0, "rate": e["rate"], "entries": 0,
                                   "first_utc": e["start_utc"], "last_utc": e["end_utc"]})
+        if requesters:
+            if who is None:
+                ln["requester_conflict"] = True
+            ln["requested_by"] = who or ""
         ln["seconds"] += e["seconds"]
         ln["entries"] += 1
         ln["last_utc"] = max(ln["last_utc"], e["end_utc"])

@@ -863,6 +863,17 @@ class Invoices(McpCase):
                                                        client="Acme"))
         self.assertIn("nothing to change", self.fails("update_invoice_settings"))
         self.assertIn("at least 0", self.fails("update_invoice_settings", rate=-1))
+        # Requesters: set, kept by an unrelated change, then removed.
+        self.call("create_tag", name="Ops Lead, OL")
+        who = [{"tag": "Ops Lead, OL", "projects": ["Support"]}]
+        self.assertEqual(self.call("update_invoice_settings", requesters=who)
+                         ["settings"]["requesters"], who)
+        self.call("update_invoice_settings", terms="Net 15")
+        self.assertEqual(invoices.load_profile()["requesters"], who)
+        self.assertIn("no tag named", self.fails(
+            "update_invoice_settings", requesters=[{"tag": "Nobody"}]))
+        self.call("update_invoice_settings", requesters=[])
+        self.assertNotIn("requesters", invoices.load_profile())
 
 
 class DaylightSaving(McpCase):

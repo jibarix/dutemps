@@ -371,7 +371,10 @@ class Profile(ProfileDir):
 
     def setUp(self):
         super().setUp()
-        # Projects named by the profile but with no time this month.
+        self.add_profile_projects()
+
+    def add_profile_projects(self):
+        """Projects named by the profile but with no time this month."""
         names = {r["name"]: r["id"] for r in self.con.execute("SELECT id, name FROM projects")}
         for s in self.prof["sections"]:
             for g in s.get("groups") or [s]:
@@ -485,6 +488,135 @@ class Profile(ProfileDir):
         code, _, body = call("POST", "/api/invoice-profile/preview", {**self.prof, "terms": "x" * 80})
         self.assertEqual(code, 400)
         self.assertIn("too long to fit", json.loads(body)["error"])
+
+
+class Requesters(ProfileDir):
+    """Who asked for the work: a tag per requester, a usual requester per
+    project, lines split by who asked, and both printed on the PDF."""
+
+    build = Amounts.build
+    add_profile_projects = Profile.add_profile_projects
+
+    def setUp(self):
+        super().setUp()
+        self.add_profile_projects()
+        self.mk = core.create(self.con, "tags", {"name": "Marketing, MK"})["id"]
+        self.ol = core.create(self.con, "tags", {"name": "Ops Lead, OL"})["id"]
+        self.prof["requesters"] = [{"tag": "Marketing, MK", "projects": ["Website"]},
+                                   {"tag": "Ops Lead, OL", "projects": []}]
+
+    def support_on(self, day):
+        return [e["id"] for e in core.list_entries(
+            self.con, {"from": day, "to": day}, order="ASC") if e["project"] == "Support"]
+
+    def tag(self, ids, *tags):
+        for i in ids:
+            core.update_entry(self.con, i, {"tag_ids": list(tags)})
+
+    @staticmethod
+    def text(doc):
+        return b"".join(zlib.decompress(part.rsplit(b"stream\n", 1)[1])
+                        for part in doc.split(b"\nendstream")[:-1])
+
+    def test_lines_are_split_by_who_asked(self):
+        first, second = self.support_on("2026-09-01")
+        self.tag([first], self.ol)
+        inv = self.build()
+        lines = [l for s in inv["sections"] for g in s["groups"] for l in g["lines"]]
+        # A project's untagged time goes to its usual requester.
+        self.assertEqual({l["requested_by"] for l in lines if l["project"] == "Website"},
+                         {"Marketing, MK"})
+        # One day's Support is now two lines: the tagged entry and the other.
+        sep1 = [l for l in lines if l["date"] == "2026-09-01" and l["project"] == "Support"]
+        self.assertEqual(sorted(l["requested_by"] for l in sep1), ["", "Ops Lead, OL"])
+        who = dict(inv["by_requester"])
+        self.assertEqual(sum(who.values()), inv["hours"])
+        self.assertEqual(who["Marketing, MK"], 33.25)
+        self.assertEqual(inv["by_requester"][-1][0], invoices.NO_REQUESTER)
+        # The amounts follow the split lines, each rounded on its own.
+        self.assertEqual(inv["total"], invoices.cents(inv["hours"] * 100))
+
+    def test_a_tag_wins_over_the_usual_requester(self):
+        site = [e["id"] for e in core.list_entries(self.con, {}) if e["project"] == "Website"]
+        self.tag(site[:1], self.ol)
+        who = dict(self.build()["by_requester"])
+        self.assertIn("Ops Lead, OL", who)
+        self.assertLess(who["Marketing, MK"], 33.25)
+
+    def test_two_requester_tags_on_one_entry_are_refused(self):
+        self.tag(self.support_on("2026-09-01")[:1], self.ol, self.mk)
+        with self.assertRaises(core.Invalid) as e:
+            self.build()
+        self.assertIn("more than one requester: 2026-09-01 Support", str(e.exception))
+
+    def test_without_requesters_nothing_changes(self):
+        self.tag(self.support_on("2026-09-01"), self.ol)
+        del self.prof["requesters"]
+        inv = self.build()
+        self.assertEqual((inv["hours"], inv["net"], inv["by_requester"]), (71.25, NET, []))
+        self.assertNotIn("requested_by", inv["sections"][0]["groups"][0]["lines"][0])
+        text = self.text(invoices.render(inv, self.prof))
+        self.assertNotIn(b"REQUESTED BY", text)
+        self.assertNotIn(b"Hours by requester", text)
+
+    def test_pdf_prints_who_asked(self):
+        self.tag(self.support_on("2026-09-01")[:1], self.ol)
+        text = self.text(invoices.render(self.build(), self.prof))
+        for want in (b"REQUESTED BY", b"Hours by requester", b"Marketing, MK",
+                     b"Ops Lead, OL", b"Not specified"):
+            self.assertIn(want, text)
+
+    def test_many_requesters_keep_the_billing_summary_on_page_one(self):
+        names = [f"Requester number {i}" for i in range(8)]
+        for n in names:
+            core.create(self.con, "tags", {"name": n})
+        self.prof["requesters"] = [{"tag": n, "projects": []} for n in names]
+        ids = [e["id"] for e in core.list_entries(self.con, {}, order="ASC")]
+        tag_ids = {r["name"]: r["id"] for r in self.con.execute("SELECT id, name FROM tags")}
+        for i, e in enumerate(ids):
+            self.tag([e], tag_ids[names[i % 8]])
+        inv = self.build()
+        self.assertEqual(len(inv["by_requester"]), 8)
+        drawn = []
+        real = invoices._billing
+        with mock.patch.object(invoices, "_billing",
+                               lambda p, top, inv: drawn.append(real(p, top, inv)) or drawn[-1]):
+            invoices.render(inv, self.prof)
+        self.assertLessEqual(drawn[0], invoices.BOTTOM)
+
+    def test_issued_invoice_compares_live_hours_the_same_way(self):
+        self.tag(self.support_on("2026-09-01")[:1], self.ol)
+        invoices.save_profile(self.con, invoices.clean_profile(self.con, self.prof, self.prof))
+        d = invoices.create(self.con, SEPT)
+        i = invoices.issue(self.con, d["id"])
+        self.assertEqual(i["live_hours"], i["invoice"]["hours"])
+
+    def test_settings(self):
+        p = invoices.clean_profile(self.con, self.prof, self.prof)
+        self.assertEqual(p["requesters"], self.prof["requesters"])
+        # The tag's own spelling is kept.
+        lower = json.loads(json.dumps(self.prof))
+        lower["requesters"][1]["tag"] = "ops lead, ol"
+        self.assertEqual(invoices.clean_profile(self.con, lower, self.prof)
+                         ["requesters"][1]["tag"], "Ops Lead, OL")
+        # Left out of a change, they are kept; an empty list removes them.
+        rest = {k: v for k, v in self.prof.items() if k != "requesters"}
+        self.assertEqual(invoices.clean_profile(self.con, rest, p)["requesters"],
+                         p["requesters"])
+        self.assertNotIn("requesters", invoices.clean_profile(
+            self.con, dict(self.prof, requesters=[]), p))
+        cases = {
+            "no tag named": [{"tag": "Nobody", "projects": []}],
+            "one usual requester": [{"tag": "Marketing, MK", "projects": ["Website"]},
+                                    {"tag": "Ops Lead, OL", "projects": ["Website"]}],
+            "no project named": [{"tag": "Marketing, MK", "projects": ["Nope"]}],
+            "listed twice": [{"tag": "Marketing, MK"}, {"tag": "marketing, mk"}],
+            "must be a list": "Marketing, MK",
+        }
+        for want, v in cases.items():
+            with self.assertRaises(core.Invalid, msg=want) as e:
+                invoices.clean_profile(self.con, dict(self.prof, requesters=v), self.prof)
+            self.assertIn(want, str(e.exception))
 
 
 class Writer(unittest.TestCase):

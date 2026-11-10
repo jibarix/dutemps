@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
+### Added
+- Requesters on invoices: name the people who ask you for work on Invoice settings ("Requested by"). Each requester is a tag; tag an entry to say who asked for it, and give a requester the projects they usually ask for, so untagged time there counts as theirs. With requesters, invoice lines are split by who asked, the detail pages get a Requested by column, page one shows hours by requester under hours by project, and the invoice page lists hours by requester. An entry with two requester tags stops the invoice and is named. Invoices without requesters are unchanged.
+- The MCP settings tools read and change requesters (`requesters: [{tag, projects}]`; `[]` removes them). An issued invoice compares its hours with the live entries split the same way.
+
+### Changed
+- On page one, the hours-by-project rows close up when they would push the billing summary off the page.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added
@@ -46,7 +55,8 @@ First public release. Tested with Python 3.11.9 on Windows 11.
 - An MCP server (`python -m dutemps --db PATH mcp`) so Claude Code, Codex and other agents can read status and reports, run the timer, log and edit time, and draft invoices. Issuing and voiding stay with the user in the app.
 - Import from CSV, SQLite backups, and a pre-commit check that keeps private terms out of the repository.
 
-[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jibarix/dutemps/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jibarix/dutemps/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jibarix/dutemps/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jibarix/dutemps/releases/tag/v0.1.0

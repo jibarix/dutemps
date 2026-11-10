@@ -1440,6 +1440,7 @@ async function invoiceSettings(root) {
   }
   p.retainer_label = p.retainer_label || "Less: Retainer Fee Paid on {date}";
   p.credit_note = p.credit_note || { head: "", text: "" };
+  p.requesters = p.requesters || [];
   const saveBtn = h("button", { class: "primary", disabled: true }, "Save settings");
   const touch = () => { saveBtn.disabled = false; };
 
@@ -1536,6 +1537,39 @@ async function invoiceSettings(root) {
     p.credits.length < 4 ? h("button", { class: "mt", onclick: () => { p.credits.push({ label: "Less: Discount ({pct}%)", pct: 50, scope: { project: S.meta.projects[0] ? S.meta.projects[0].name : "" } }); touch(); paintCredits(); } }, "+ Add credit") : null);
   };
 
+  // ---- requesters
+  const reqBox = h("div");
+  const paintRequesters = () => {
+    const taken = new Set(p.requesters.flatMap((r) => r.projects));
+    const tagsFree = (r) => S.meta.tags.filter((t) => (!t.archived || t.name === r.tag) && !p.requesters.some((o) => o !== r && o.tag === t.name));
+    reqBox.replaceChildren(p.requesters.map((r, ri) => h("div", { class: "panel pad mt prof-sec" },
+      h("div", { class: "row" },
+        (() => {
+          const sel = h("select", { "aria-label": `Requester ${ri + 1} tag` },
+            r.tag && !S.meta.tags.some((t) => t.name === r.tag) ? h("option", { value: r.tag }, `${r.tag} (no such tag)`) : null,
+            tagsFree(r).map((t) => h("option", { value: t.name }, t.name)));
+          sel.value = r.tag;
+          sel.addEventListener("change", () => { r.tag = sel.value; touch(); paintRequesters(); });
+          return h("label", { class: "f grow" }, `Requester ${ri + 1} (a tag, printed as who asked)`, sel);
+        })(),
+        h("button", { class: "icon", title: "Remove requester", "aria-label": "Remove requester", onclick: () => { p.requesters.splice(ri, 1); touch(); paintRequesters(); } }, ico("x"))),
+      h("div", { class: "pairs" },
+        h("span", { class: "hint" }, "Usually asks for:"),
+        r.projects.map((pj, pi) => h("span", { class: "pair" }, pj,
+          h("button", { class: "icon", "aria-label": `Remove ${pj}`, onclick: () => { r.projects.splice(pi, 1); touch(); paintRequesters(); } }, ico("x")))),
+        (() => {
+          const sel = h("select", { "aria-label": "Add a project" }, h("option", { value: "" }, "+ Add project…"),
+            [...S.meta.projects].sort((a, b) => a.name.localeCompare(b.name)).filter((pj) => !taken.has(pj.name)).map((pj) => h("option", { value: pj.name }, pj.name)));
+          sel.addEventListener("change", () => { if (!sel.value) return; r.projects.push(sel.value); touch(); paintRequesters(); });
+          return sel;
+        })()))),
+    p.requesters.length < 8 ? h("button", { class: "mt", onclick: () => {
+      const free = tagsFree({});
+      if (!free.length) { toast("Create a tag for the requester first (Tags page), e.g. “Operations Manager, AB”."); return; }
+      p.requesters.push({ tag: free[0].name, projects: [] }); touch(); paintRequesters();
+    } }, "+ Add requester") : null);
+  };
+
   const body = () => ({ ...p, rate: +p.rate, max_hours: +p.max_hours,
     credits: p.credits.map((c) => ({ ...c, pct: +c.pct })),
     remittance: [].concat(p.remittance), client: { ...p.client, address: [].concat(p.client.address) } });
@@ -1590,6 +1624,9 @@ async function invoiceSettings(root) {
     secBox,
     h("h2", { class: "mt" }, "Credits and discounts"),
     credBox,
+    h("h2", { class: "mt" }, "Requested by"),
+    h("p", { class: "muted", style: { maxWidth: "760px" } }, "Optional. Tag an entry with a requester’s tag to say who asked for it; untagged time goes to its project’s usual requester. With requesters, invoice lines are split by who asked, the detail gets a Requested by column and page one shows hours by requester."),
+    reqBox,
     h("div", { class: "panel pad prof-form mt" }, h("h2", {}, "Credit note"),
       field(p.credit_note, "head", "Heading"),
       area(p.credit_note, "text", "Text (printed after the remittance lines when an invoice has credits)", 4)),
@@ -1598,6 +1635,7 @@ async function invoiceSettings(root) {
       h("button", { onclick: () => route() }, "Discard changes")));
   paintSections();
   paintCredits();
+  paintRequesters();
 }
 
 async function pageInvoices(root, params) {
@@ -1663,7 +1701,10 @@ async function invoiceEditor(root, idParam) {
           h("tr", { class: "strong" }, h("td", { colspan: 2 }, "Subtotal"), h("td", { class: "num" }, hrs(inv.hours)), h("td", { class: "num" }, money(inv.subtotal))),
           inv.credits.map((c) => h("tr", {}, h("td", { colspan: 2 }, c.label), h("td", { class: "num muted" }, hrs(c.hours)), h("td", { class: "num neg" }, smoney(c.amount)))),
           inv.retainer ? h("tr", {}, h("td", { colspan: 3 }, inv.retainer.label), h("td", { class: "num neg" }, smoney(inv.retainer.amount))) : null),
-        h("tfoot", {}, h("tr", {}, h("td", { colspan: 3 }, "Net payable"), h("td", { class: "num" }, money(inv.net)))))));
+        h("tfoot", {}, h("tr", {}, h("td", { colspan: 3 }, "Net payable"), h("td", { class: "num" }, money(inv.net)))))),
+      inv.by_requester && inv.by_requester.length ? h("div", { class: "panel mt" }, h("table", { class: "t" },
+        h("thead", {}, h("tr", {}, h("th", {}, "Requested by"), h("th", { class: "num" }, "Hours"), h("th", { class: "num" }, "Share"))),
+        h("tbody", {}, inv.by_requester.map(([who, x]) => h("tr", {}, h("td", {}, who), h("td", { class: "num" }, hrs(x)), h("td", { class: "num muted" }, `${Math.round(100 * x / inv.hours)}%`)))))) : null);
   };
 
   let timer = 0, seq = 0;
