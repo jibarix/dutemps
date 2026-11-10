@@ -107,7 +107,9 @@ the same from month to month:
 - the agreement and payment terms;
 - remittance lines;
 - **sections**, which list the (project, task) pairs they bill;
-- **credits**, a percentage off one project or one section.
+- **credits**, a percentage off one project, one section, or one group
+  inside a section (for example, a section split into two groups where
+  only one of them gets the credit).
 
 Every billable (project, task) must belong to a section. Saving checks that
 each string fits where the PDF prints it, and keeps a copy of the old profile

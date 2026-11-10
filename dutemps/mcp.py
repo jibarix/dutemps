@@ -1618,10 +1618,11 @@ PROFILE = {
     "retainer_label": _s("Retainer line; {date} becomes the date, e.g. 30-Sep-26."),
     "sections": _a("All sections, replacing them: heading, key, optional intro, and "
                    "either subtotal and pairs ([project, task]) or groups of label, "
-                   "subtotal and pairs. Read the current ones with get_invoice_settings "
+                   "subtotal, pairs and an optional key (a credit can apply to one "
+                   "group by its key). Read the current ones with get_invoice_settings "
                    "first.", OBJECT),
     "credits": _a("All credits, replacing them: label (may use {pct}), pct, and scope "
-                  "{project: name} or {section: key}.", OBJECT),
+                  "{project: name}, {section: key} or {group: key}.", OBJECT),
     "credit_note": {**OBJECT, "description": "The note about credits at the foot: head "
                     "and text."},
 }

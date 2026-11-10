@@ -16,6 +16,8 @@ import unittest
 import urllib.error
 import urllib.request
 import zlib
+from datetime import date
+from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -31,6 +33,14 @@ SEPT = {"number": "NW-2026-09", "issued": "2026-10-05", "period_from": "2026-09-
         "credit_pcts": [10, 50]}
 NET = 5605.0          # 7,125.00 - 332.50 - 687.50 - 500.00
 NET_20_20 = 5685.0    # 7,125.00 - 665.00 - 275.00 - 500.00
+
+
+class OctoberFifth(date):
+    """Today, for code that defaults to last month: the sample is September."""
+
+    @classmethod
+    def today(cls):
+        return cls(2026, 10, 5)
 
 
 def sample_db():
@@ -98,6 +108,24 @@ class Amounts(ProfileDir):
         self.assertEqual(inv["credits"][0]["label"],
                          "Less: Returning-client discount on Website (20%)")
         self.assertEqual(inv["net"], NET_20_20)
+
+    def test_credit_on_one_group(self):
+        dw = self.prof["sections"][0]["groups"][1]
+        dw["key"] = "warehouse"
+        self.prof["credits"][0]["scope"] = {"group": "warehouse"}
+        inv = self.build()
+        want = dict(inv["by_project"])["Data Warehouse"]
+        self.assertTrue(0 < want < inv["sections"][0]["hours"])
+        self.assertEqual(inv["credits"][0]["hours"], want)
+        pct = self.prof["credits"][0]["pct"]
+        self.assertEqual(inv["credits"][0]["amount"], -invoices.cents(pct / 100 * 100 * want))
+
+    def test_credit_on_a_group_with_no_hours_is_refused(self):
+        self.prof["sections"][0]["groups"][1]["key"] = "warehouse"
+        self.prof["credits"][0]["scope"] = {"group": "elsewhere"}
+        with self.assertRaises(core.Invalid) as e:
+            self.build()
+        self.assertIn("no hours in scope", str(e.exception))
 
     def test_pdf_is_deterministic_and_well_formed(self):
         inv = self.build()
@@ -401,12 +429,32 @@ class Profile(ProfileDir):
             "room for 6 lines": lambda p: p["client"].update(address=["x"] * 7),
             "at least one section": lambda p: p.update(sections=[]),
             "pick one": lambda p: p["credits"][0].update(scope={}),
+            "no group with key": lambda p: p["credits"][0].update(scope={"group": "gone"}),
+            "two groups share the key": lambda p: [
+                g.update(key="same") for g in p["sections"][0]["groups"]],
             "not in your clients": lambda p: p["client"].update(name="Contoso"),
         }
         for want, fn in cases.items():
             with self.assertRaises(core.Invalid, msg=want) as e:
                 invoices.clean_profile(self.con, self.edited(fn), self.prof)
             self.assertIn(want, str(e.exception))
+
+    def test_group_keys_are_kept(self):
+        def edit(p):
+            p["sections"][0]["groups"][1]["key"] = "warehouse"
+            p["credits"][0]["scope"] = {"group": "warehouse"}
+            # A lone unlabelled group with a key keeps its group shape.
+            s = p["sections"][1]
+            s["groups"] = [{"label": "", "subtotal": s.pop("subtotal"),
+                            "pairs": s.pop("pairs"), "key": "support-all"}]
+        got = invoices.clean_profile(self.con, self.edited(edit), self.prof)
+        self.assertEqual(got["sections"][0]["groups"][1]["key"], "warehouse")
+        self.assertNotIn("key", got["sections"][0]["groups"][0])
+        self.assertEqual(got["sections"][1]["groups"][0]["key"], "support-all")
+        self.assertEqual(got["credits"][0]["scope"], {"group": "warehouse"})
+        invoices.save_profile(self.con, got)
+        d = invoices.defaults(self.con, "2026-10-05")
+        self.assertEqual(d["credits"][0]["scope"], "Data Warehouse")
 
     def test_client_is_chosen_from_your_clients(self):
         clean = lambda fn: invoices.clean_profile(self.con, self.edited(fn), self.prof)
@@ -423,6 +471,7 @@ class Profile(ProfileDir):
         self.assertTrue(data.startswith(b"%PDF"))
         self.assertEqual(invoices.load_profile(), self.prof)  # nothing saved
 
+    @mock.patch.object(invoices, "date", OctoberFifth)
     def test_server_routes(self):
         call = self.serve()
         code, _, body = call("GET", "/api/invoice-profile")

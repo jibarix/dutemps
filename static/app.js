@@ -1502,10 +1502,23 @@ async function invoiceSettings(root) {
     credBox.replaceChildren(p.credits.map((c, ci) => {
       const sel = h("select", { "aria-label": "Applies to" },
         h("optgroup", { label: "Project" }, S.meta.projects.map((pj) => h("option", { value: "p:" + pj.name, selected: c.scope.project === pj.name }, pj.name))),
-        h("optgroup", { label: "Whole section" }, p.sections.map((s, si) => h("option", { value: "s:" + si, selected: !!s.key && c.scope.section === s.key }, s.heading))));
+        h("optgroup", { label: "Whole section" }, p.sections.map((s, si) => h("option", { value: "s:" + si, selected: !!s.key && c.scope.section === s.key }, s.heading))),
+        h("optgroup", { label: "One group" }, p.sections.flatMap((s, si) => s.groups.length > 1 || s.groups.some((g) => g.label)
+          ? s.groups.map((g, gi) => h("option", { value: `g:${si}:${gi}`, selected: !!g.key && c.scope.group === g.key }, `${s.heading} › ${g.label || "group " + (gi + 1)}`))
+          : [])));
       sel.addEventListener("change", () => {
         if (sel.value.startsWith("p:")) c.scope = { project: sel.value.slice(2) };
-        else {
+        else if (sel.value.startsWith("g:")) {
+          const [si, gi] = sel.value.slice(2).split(":").map(Number);
+          const g = p.sections[si].groups[gi];
+          if (!g.key) {
+            const base = slug(g.label || p.sections[si].heading + "-" + (gi + 1));
+            const all = p.sections.flatMap((s) => s.groups);
+            let k = base, n = 2; while (all.some((x) => x !== g && x.key === k)) k = base + "-" + n++;
+            g.key = k;
+          }
+          c.scope = { group: g.key };
+        } else {
           const s = p.sections[+sel.value.slice(2)];
           if (!s.key) { let k = slug(s.heading), n = 2; while (p.sections.some((x) => x !== s && x.key === k)) k = slug(s.heading) + "-" + n++; s.key = k; }
           c.scope = { section: s.key };

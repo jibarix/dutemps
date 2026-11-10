@@ -6,7 +6,19 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
+### Added
+- A credit can apply to one group inside a section, as well as to a project or a whole section. Give the group a key (Invoice settings sets one when you pick the group under "Applies to"), and the credit is sized from that group's hours alone. The MCP settings tools take `{group: key}` as a scope.
+- The MCP server has a tool for every action in the app, 50 in all: editing and deleting clients, projects, tasks and tags, settings, weekly and series reports, the dashboard, exports, CSV import, backups, invoice settings, and issuing, voiding and deleting invoices. Issuing, voiding and deleting need the invoice number again as `confirm`, checked in the same transaction that makes the change. Report filters take several clients, projects, tasks or tags, as the app's do.
+
+### Changed
+- The monthly maximum is optional: a maximum of 0 leaves the maximum and additional-amount rows off the invoice.
+- Issuing, voiding and deleting an invoice read, check and write in one transaction, so two processes can't both bill the same period. Invoice settings changes are merged and saved under one lock, so an edit saved meanwhile is kept.
+
 ### Fixed
+- Files are never overwritten, even in a race; file names made from invoice numbers can't leave the folder given; a failed backup closes and removes its file.
+- Two tests that preview invoice settings no longer depend on today's date.
 - Long descriptions can be read and edited in full. In the Time Tracker the description now sits on its own line across the row, wrapped in full, with the project and tags underneath; clicking it opens a box that grows as you type. The Edit dialog has the same box. In both, Enter saves and Shift+Enter starts a new line.
 - Entries of one day with the same description, project, task, tags and billable setting show as one row with a count, their time span and total. Editing the row's description, project, tags or billable setting changes every entry in it; the count opens the entries one by one.
 - Descriptions with several lines keep their line breaks when edited. Before, the one-line field in the entry list and the Edit dialog joined the lines on save. A running entry with several lines opens the Edit dialog from the timer bar.
@@ -34,6 +46,7 @@ First public release. Tested with Python 3.11.9 on Windows 11.
 - An MCP server (`python -m dutemps --db PATH mcp`) so Claude Code, Codex and other agents can read status and reports, run the timer, log and edit time, and draft invoices. Issuing and voiding stay with the user in the app.
 - Import from CSV, SQLite backups, and a pre-commit check that keeps private terms out of the repository.
 
-[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jibarix/dutemps/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jibarix/dutemps/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jibarix/dutemps/releases/tag/v0.1.0

@@ -6,7 +6,8 @@ and re-rendered later without consulting the time entries again:
   subtotal      = hours x rate
   credit        = -(pct x rate x hours in scope), rounded to the cent, sized
                   from the lines rather than typed, so a corrected line carries
-                  into its credit (scope: a project, or a section's subtotal)
+                  into its credit (scope: a project, a section's subtotal or
+                  one group's subtotal)
   net           = subtotal + credits + retainer, never below zero
 
 The monthly maximum and the "additional amount authorized" rows are
@@ -133,7 +134,8 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
         sections.append({"heading": s["heading"], "key": s.get("key", ""),
                          "intro": s.get("intro", ""), "groups": [
                              {"label": g["label"], "subtotal": g["subtotal"],
-                              "lines": [], "hours": 0.0} for g in groups]})
+                              "key": g.get("key", ""), "lines": [], "hours": 0.0}
+                             for g in groups]})
         for gi, g in enumerate(groups):
             for p, t in g["pairs"]:
                 where[(p, t)] = (si, gi)
@@ -170,6 +172,9 @@ def build(con, profile, number, issued, d_from, d_to, retainer=0.0,
         sc = c["scope"]
         if "project" in sc:
             h = sum(l["hours"] for l in lines if l["project"] == sc["project"])
+        elif "group" in sc:
+            h = sum(g["hours"] for s in sections for g in s["groups"]
+                    if g["key"] == sc["group"])
         else:
             h = sum(s["hours"] for s in sections if s["key"] == sc["section"])
         if not h:
@@ -799,6 +804,15 @@ def defaults(con, today):
     sequence may have gaps); the last one is shown instead."""
     profile = load_profile()
     heads = {x.get("key"): x["heading"].capitalize() for x in profile["sections"]}
+    group_names = {g["key"]: g["label"] or g["key"] for x in profile["sections"]
+                   for g in x.get("groups") or [] if g.get("key")}
+
+    def scope_name(sc):
+        if sc.get("project"):
+            return sc["project"]
+        if sc.get("group"):
+            return group_names.get(sc["group"], sc["group"])
+        return heads.get(sc.get("section"), sc.get("section"))
     end = date.fromisoformat(today).replace(day=1) - timedelta(days=1)
     last = con.execute("SELECT number, retainer, credit_pcts FROM invoices "
                        "WHERE status <> 'void' ORDER BY issued DESC, id DESC").fetchone()
@@ -809,9 +823,8 @@ def defaults(con, today):
         "credit_pcts": _fit_pcts(json.loads(last["credit_pcts"]), profile) if last else
         [c["pct"] for c in profile["credits"]],
         "last_number": last["number"] if last else "",
-        "credits": [{"scope": c["scope"].get("project") or heads.get(c["scope"].get("section"),
-                                                                   c["scope"].get("section")),
-                     "pct": c["pct"]} for c in profile["credits"]],
+        "credits": [{"scope": scope_name(c["scope"]), "pct": c["pct"]}
+                    for c in profile["credits"]],
     }
 
 
@@ -922,7 +935,7 @@ def clean_profile(con, b, current=None):
     for r in con.execute("SELECT p.name AS p, t.name AS t FROM projects p "
                          "LEFT JOIN tasks t ON t.project_id = p.id"):
         known.setdefault(r["p"], {""}).add(r["t"] or "")
-    seen, keys, sections = {}, set(), []
+    seen, keys, group_keys, sections = {}, set(), set(), []
     if not b.get("sections"):
         raise core.Invalid("at least one section is needed")
     for si, s in enumerate(b["sections"], 1):
@@ -954,13 +967,21 @@ def clean_profile(con, b, current=None):
                 pairs.append([proj, tsk])
             if not pairs:
                 raise core.Invalid(f"{where} has no projects or tasks")
-            clean_groups.append({
-                "label": _txt(g.get("label"), f"{where} label", False, "group.label"),
-                "subtotal": _txt(g.get("subtotal"), f"{where} subtotal line",
-                                 fit="group.subtotal"),
-                "pairs": pairs})
-        # One unlabelled group is stored flat, the shape the file always had.
-        if len(clean_groups) == 1 and not clean_groups[0]["label"]:
+            cg = {"label": _txt(g.get("label"), f"{where} label", False, "group.label"),
+                  "subtotal": _txt(g.get("subtotal"), f"{where} subtotal line",
+                                   fit="group.subtotal"),
+                  "pairs": pairs}
+            gkey = str(g.get("key") or "").strip()
+            if gkey:
+                if gkey in group_keys:
+                    raise core.Invalid(f"two groups share the key {gkey!r}")
+                group_keys.add(gkey)
+                cg["key"] = gkey
+            clean_groups.append(cg)
+        # One unlabelled group without a key is stored flat, the shape the
+        # file always had.
+        if (len(clean_groups) == 1 and not clean_groups[0]["label"]
+                and "key" not in clean_groups[0]):
             out.update(subtotal=clean_groups[0]["subtotal"], pairs=clean_groups[0]["pairs"])
         else:
             out["groups"] = clean_groups
@@ -977,15 +998,19 @@ def clean_profile(con, b, current=None):
         except (KeyError, IndexError, ValueError):
             raise core.Invalid(f"Credit {ci} wording may only use {{pct}} in braces") from None
         sc = c.get("scope") or {}
-        if bool(sc.get("project")) == bool(sc.get("section")):
-            raise core.Invalid(f"Credit {ci} applies to a project or a section; pick one")
-        if sc.get("project") and sc["project"] not in known:
+        kinds = [k for k in ("project", "section", "group") if sc.get(k)]
+        if len(kinds) != 1:
+            raise core.Invalid(f"Credit {ci} applies to a project, a section or a group; "
+                               "pick one")
+        [kind] = kinds
+        if kind == "project" and sc["project"] not in known:
             raise core.Invalid(f"Credit {ci}: no project named {sc['project']!r}")
-        if sc.get("section") and sc["section"] not in keys:
+        if kind == "section" and sc["section"] not in keys:
             raise core.Invalid(f"Credit {ci}: no section with key {sc['section']!r}")
+        if kind == "group" and sc["group"] not in group_keys:
+            raise core.Invalid(f"Credit {ci}: no group with key {sc['group']!r}")
         credits.append({"label": label, "pct": _pct_num(c.get("pct"), ci),
-                        "scope": {"project": sc["project"]} if sc.get("project")
-                        else {"section": sc["section"]}})
+                        "scope": {kind: sc[kind]}})
     p["credits"] = credits
     n = b.get("credit_note") or {}
     p["credit_note"] = {"head": _txt(n.get("head"), "Credit note heading", bool(credits),

@@ -841,6 +841,8 @@ class Invoices(McpCase):
         p = invoices.load_profile()
         self.assertEqual((p["max_hours"], p["issuer"]["email"]), (0, "new@example.com"))
 
+    @mock.patch.object(invoices, "date", type("OctoberFifth", (invoices.date,), {
+        "today": classmethod(lambda cls: cls(2026, 10, 5))}))
     def test_invoice_settings_read_preview_and_change(self):
         # every task in the example's sections must exist to save them
         self.call("create_project", name="Training", client="Northwind Traders")
