@@ -874,6 +874,12 @@ class Invoices(McpCase):
             "update_invoice_settings", requesters=[{"tag": "Nobody"}]))
         self.call("update_invoice_settings", requesters=[])
         self.assertNotIn("requesters", invoices.load_profile())
+        # Their wording: only the key given changes, and a blank one is the default.
+        self.call("update_invoice_settings", requester_labels={
+            "heading": "Requested or reported by", "none": "Upkeep"})
+        self.call("update_invoice_settings", requester_labels={"none": ""})
+        self.assertEqual(invoices.load_profile()["requester_labels"],
+                         {"heading": "Requested or reported by"})
 
 
 class DaylightSaving(McpCase):

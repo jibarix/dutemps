@@ -115,7 +115,10 @@ the same from month to month:
   you put on the entries they asked for, and can be the usual requester of
   some projects, whose untagged time then counts as theirs. With requesters,
   invoice lines are also split by who asked, the detail has a Requested by
-  column, and the summary page shows hours by requester.
+  column, and the summary page shows hours by requester. The wording is
+  yours: the heading (say, "Requested or reported by", for work asked for
+  and problems reported) and the name for time nobody asked for (say,
+  "Routine upkeep" instead of "Not specified").
 
 Every billable (project, task) must belong to a section. Saving checks that
 each string fits where the PDF prints it, and keeps a copy of the old profile

@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-10
+
+### Added
+- Your own wording for requesters on Invoice settings: the heading over who asked (default "Requested by"), for example "Requested or reported by" when the list also holds people who report problems, and the name for time nobody is named for (default "Not specified"), for example "Routine upkeep". A long heading takes two lines over the detail column. Issued invoices keep the wording they were issued with. The MCP settings tools take `requester_labels: {heading, none}`, changing only the keys given.
+
+### Changed
+- On page one, hours by requester are titled with that heading. In the detail, lines nobody is named for show the name for that time instead of a blank. Invoices issued with 0.3.0 print as they did.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
@@ -55,7 +63,8 @@ First public release. Tested with Python 3.11.9 on Windows 11.
 - An MCP server (`python -m dutemps --db PATH mcp`) so Claude Code, Codex and other agents can read status and reports, run the timer, log and edit time, and draft invoices. Issuing and voiding stay with the user in the app.
 - Import from CSV, SQLite backups, and a pre-commit check that keeps private terms out of the repository.
 
-[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jibarix/dutemps/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jibarix/dutemps/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jibarix/dutemps/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jibarix/dutemps/compare/v0.1.0...v0.1.1

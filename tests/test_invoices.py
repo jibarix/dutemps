@@ -562,9 +562,72 @@ class Requesters(ProfileDir):
     def test_pdf_prints_who_asked(self):
         self.tag(self.support_on("2026-09-01")[:1], self.ol)
         text = self.text(invoices.render(self.build(), self.prof))
-        for want in (b"REQUESTED BY", b"Hours by requester", b"Marketing, MK",
+        for want in (b"REQUESTED BY", b"Requested by", b"Marketing, MK",
                      b"Ops Lead, OL", b"Not specified"):
             self.assertIn(want, text)
+
+    def labelled(self):
+        self.prof["requester_labels"] = {"heading": "Requested or reported by",
+                                         "none": "Routine upkeep"}
+
+    def test_labels_change_the_wording(self):
+        self.labelled()
+        self.tag(self.support_on("2026-09-01")[:1], self.ol)
+        inv = self.build()
+        self.assertEqual(inv["requester_labels"], {"heading": "Requested or reported by",
+                                                   "none": "Routine upkeep"})
+        self.assertEqual(inv["by_requester"][-1][0], "Routine upkeep")
+        # Lines keep "" for nobody named; the label is only printed.
+        lines = [l for s in inv["sections"] for g in s["groups"] for l in g["lines"]]
+        self.assertIn("", {l["requested_by"] for l in lines})
+        text = self.text(invoices.render(inv, self.prof))
+        # The long heading takes two lines over the column.
+        for want in (b"REQUESTED OR", b"REPORTED BY", b"Requested or reported by",
+                     b"Routine upkeep"):
+            self.assertIn(want, text)
+        self.assertNotIn(b"Not specified", text)
+        self.assertNotIn(b"REQUESTED BY", text)
+
+    def test_an_issued_invoice_keeps_its_labels(self):
+        self.labelled()
+        invoices.save_profile(self.con, invoices.clean_profile(self.con, self.prof, self.prof))
+        i = invoices.issue(self.con, invoices.create(self.con, SEPT)["id"])
+        self.prof["requester_labels"] = {"none": "Someone else"}
+        invoices.save_profile(self.con, invoices.clean_profile(self.con, self.prof, self.prof))
+        text = self.text(invoices.pdf_for(self.con, i["id"])[1])
+        self.assertIn(b"Routine upkeep", text)
+        self.assertNotIn(b"Someone else", text)
+
+    def test_an_invoice_from_before_the_labels_prints_as_it_did(self):
+        inv = self.build()
+        del inv["requester_labels"]
+        text = self.text(invoices.render(inv, self.prof))
+        self.assertIn(b"Hours by requester", text)
+        self.assertIn(b"REQUESTED BY", text)
+
+    def test_label_settings(self):
+        clean = lambda v: invoices.clean_profile(  # noqa: E731
+            self.con, dict(self.prof, requester_labels=v), self.prof)
+        self.assertEqual(clean({"heading": "Requested or reported by", "none": ""})
+                         ["requester_labels"], {"heading": "Requested or reported by"})
+        # Blank or default wording isn't stored.
+        self.assertNotIn("requester_labels", clean({"heading": "Requested by",
+                                                    "none": "Not specified"}))
+        self.assertNotIn("requester_labels", clean({}))
+        # Left out of a change, they are kept.
+        p = clean({"none": "Routine upkeep"})
+        rest = {k: v for k, v in self.prof.items() if k != "requester_labels"}
+        self.assertEqual(invoices.clean_profile(self.con, rest, p)["requester_labels"],
+                         {"none": "Routine upkeep"})
+        cases = {
+            "too long to fit": {"heading": "Requested, reported or otherwise raised by"},
+            "kept for time nobody": {"none": "ops lead, ol"},
+            "must be an object": "Requested by",
+        }
+        for want, v in cases.items():
+            with self.assertRaises(core.Invalid, msg=want) as e:
+                clean(v)
+            self.assertIn(want, str(e.exception))
 
     def test_many_requesters_keep_the_billing_summary_on_page_one(self):
         names = [f"Requester number {i}" for i in range(8)]

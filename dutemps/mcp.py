@@ -1600,8 +1600,8 @@ def void_invoice(con, a):
 
 PROFILE_KEYS = ("issuer", "client", "agreement", "terms", "intro", "rate", "max_hours",
                 "remittance", "retainer_label", "sections", "credits", "credit_note",
-                "requesters")
-MERGED = ("issuer", "client", "credit_note")       # only the keys given change
+                "requesters", "requester_labels")
+MERGED = ("issuer", "client", "credit_note", "requester_labels")   # only the keys given change
 OBJECT = {"type": "object"}
 PROFILE = {
     "issuer": {**OBJECT, "description": "You, as printed: name, phone, email."},
@@ -1632,6 +1632,10 @@ PROFILE = {
                      "split by who asked: an entry's requester tag, else its project's "
                      "usual requester. The PDF prints a Requested by column and hours "
                      "by requester.", OBJECT),
+    "requester_labels": {**OBJECT, "description": "Wording for requesters: heading "
+                         "(over who asked, in the detail and on page one; default "
+                         "'Requested by') and none (time nobody is named for; default "
+                         "'Not specified'). A blank one goes back to the default."},
 }
 
 
@@ -1657,7 +1661,7 @@ def get_invoice_settings(con, a):
 
 @tool("update_invoice_settings", "Change invoice settings",
       "Changes the invoice settings; only the fields given change, and in issuer, "
-      "client and credit_note only the keys given. They are checked as the app checks "
+      "client, credit_note and requester_labels only the keys given. They are checked as the app checks "
       "them (wording must fit where it is printed; every billed project in a section). "
       "The old settings are backed up first. Drafts follow the new settings; issued "
       "invoices keep the ones they were issued with.",

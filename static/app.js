@@ -1441,6 +1441,7 @@ async function invoiceSettings(root) {
   p.retainer_label = p.retainer_label || "Less: Retainer Fee Paid on {date}";
   p.credit_note = p.credit_note || { head: "", text: "" };
   p.requesters = p.requesters || [];
+  p.requester_labels = { heading: "", none: "", ...(p.requester_labels || {}) };
   const saveBtn = h("button", { class: "primary", disabled: true }, "Save settings");
   const touch = () => { saveBtn.disabled = false; };
 
@@ -1626,6 +1627,9 @@ async function invoiceSettings(root) {
     credBox,
     h("h2", { class: "mt" }, "Requested by"),
     h("p", { class: "muted", style: { maxWidth: "760px" } }, "Optional. Tag an entry with a requester’s tag to say who asked for it; untagged time goes to its project’s usual requester. With requesters, invoice lines are split by who asked, the detail gets a Requested by column and page one shows hours by requester."),
+    h("div", { class: "panel pad prof-form mt" }, h("div", { class: "row" },
+      field(p.requester_labels, "heading", "Heading over who asked", { grow: true, placeholder: "Requested by" }),
+      field(p.requester_labels, "none", "Time nobody is named for", { grow: true, placeholder: "Not specified" }))),
     reqBox,
     h("div", { class: "panel pad prof-form mt" }, h("h2", {}, "Credit note"),
       field(p.credit_note, "head", "Heading"),
@@ -1703,7 +1707,7 @@ async function invoiceEditor(root, idParam) {
           inv.retainer ? h("tr", {}, h("td", { colspan: 3 }, inv.retainer.label), h("td", { class: "num neg" }, smoney(inv.retainer.amount))) : null),
         h("tfoot", {}, h("tr", {}, h("td", { colspan: 3 }, "Net payable"), h("td", { class: "num" }, money(inv.net)))))),
       inv.by_requester && inv.by_requester.length ? h("div", { class: "panel mt" }, h("table", { class: "t" },
-        h("thead", {}, h("tr", {}, h("th", {}, "Requested by"), h("th", { class: "num" }, "Hours"), h("th", { class: "num" }, "Share"))),
+        h("thead", {}, h("tr", {}, h("th", {}, (inv.requester_labels || {}).heading || "Requested by"), h("th", { class: "num" }, "Hours"), h("th", { class: "num" }, "Share"))),
         h("tbody", {}, inv.by_requester.map(([who, x]) => h("tr", {}, h("td", {}, who), h("td", { class: "num" }, hrs(x)), h("td", { class: "num muted" }, `${Math.round(100 * x / inv.hours)}%`)))))) : null);
   };
 

@@ -1,3 +1,3 @@
 """DuTemps: a local, single-user time tracker with PDF invoices. See README.md."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
