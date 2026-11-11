@@ -113,7 +113,9 @@ the same from month to month:
   only one of them gets the credit);
 - **requesters** (optional), the people who ask you for work. Each is a tag
   you put on the entries they asked for, and can be the usual requester of
-  some projects, whose untagged time then counts as theirs. With requesters,
+  some projects, whose untagged time then counts as theirs. To say nobody
+  asked for an entry on such a project, tag it with a tag named like the
+  time nobody asked for (below). With requesters,
   invoice lines are also split by who asked, the detail has a Requested by
   column, and the summary page shows hours by requester. The wording is
   yours: the heading (say, "Requested or reported by", for work asked for

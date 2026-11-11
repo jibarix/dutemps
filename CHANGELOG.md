@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
+### Added
+- Say that nobody asked for an entry, even on a project with a usual requester: tag it with a tag named like the time nobody is named for (Invoice settings, default "Not specified"; for example "Routine upkeep"). That entry's time is listed under that name instead of going to the project's usual requester. An entry with that tag and a requester tag stops the invoice and is named, as two requester tags do.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added
@@ -63,7 +68,8 @@ First public release. Tested with Python 3.11.9 on Windows 11.
 - An MCP server (`python -m dutemps --db PATH mcp`) so Claude Code, Codex and other agents can read status and reports, run the timer, log and edit time, and draft invoices. Issuing and voiding stay with the user in the app.
 - Import from CSV, SQLite backups, and a pre-commit check that keeps private terms out of the repository.
 
-[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jibarix/dutemps/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jibarix/dutemps/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jibarix/dutemps/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jibarix/dutemps/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jibarix/dutemps/compare/v0.1.1...v0.2.0

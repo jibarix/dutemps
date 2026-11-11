@@ -161,10 +161,15 @@ def weekly(con, f, monday):
 
 def requester_of(entry, requesters):
     """Who asked for an entry: its requester tag, else its project's usual
-    requester, else "". None when it carries two requester tags. requesters
-    is {"tags": {casefolded tag: name}, "defaults": {project: name}}."""
-    hits = {requesters["tags"][t["name"].casefold()] for t in entry["tags"]
-            if t["name"].casefold() in requesters["tags"]}
+    requester, else "". A tag named like the label for time nobody is named
+    for (requesters["none"]) says nobody asked, even on a project with a usual
+    requester. None when it carries two of these. requesters is
+    {"tags": {casefolded tag: name}, "defaults": {project: name}, "none": casefolded label}."""
+    names = {t["name"].casefold() for t in entry["tags"]}
+    hits = {requesters["tags"][n] for n in names if n in requesters["tags"]}
+    nobody = requesters.get("none")
+    if nobody and nobody in names:
+        hits.add("")
     if len(hits) > 1:
         return None
     return hits.pop() if hits else requesters["defaults"].get(entry["project"] or "", "")

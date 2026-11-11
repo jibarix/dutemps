@@ -543,6 +543,28 @@ class Requesters(ProfileDir):
         self.assertIn("Ops Lead, OL", who)
         self.assertLess(who["Marketing, MK"], 33.25)
 
+    def test_the_nobody_tag_wins_over_the_usual_requester(self):
+        site = [e["id"] for e in core.list_entries(self.con, {}) if e["project"] == "Website"]
+        before = dict(self.build()["by_requester"])
+        self.prof["requester_labels"] = {"none": "System maintenance"}
+        upkeep = core.create(self.con, "tags", {"name": "system maintenance"})["id"]
+        self.tag(site, upkeep)
+        inv = self.build()
+        who = dict(inv["by_requester"])
+        self.assertNotIn("Marketing, MK", who)
+        self.assertEqual(who["System maintenance"],
+                         before["Marketing, MK"] + before[invoices.NO_REQUESTER])
+        lines = [l for s in inv["sections"] for g in s["groups"] for l in g["lines"]]
+        self.assertEqual({l["requested_by"] for l in lines if l["project"] == "Website"}, {""})
+
+    def test_the_nobody_tag_and_a_requester_tag_together_are_refused(self):
+        self.prof["requester_labels"] = {"none": "System maintenance"}
+        upkeep = core.create(self.con, "tags", {"name": "System maintenance"})["id"]
+        self.tag(self.support_on("2026-09-01")[:1], self.ol, upkeep)
+        with self.assertRaises(core.Invalid) as e:
+            self.build()
+        self.assertIn("more than one requester: 2026-09-01 Support", str(e.exception))
+
     def test_two_requester_tags_on_one_entry_are_refused(self):
         self.tag(self.support_on("2026-09-01")[:1], self.ol, self.mk)
         with self.assertRaises(core.Invalid) as e:

@@ -1635,7 +1635,9 @@ PROFILE = {
     "requester_labels": {**OBJECT, "description": "Wording for requesters: heading "
                          "(over who asked, in the detail and on page one; default "
                          "'Requested by') and none (time nobody is named for; default "
-                         "'Not specified'). A blank one goes back to the default."},
+                         "'Not specified'). A blank one goes back to the default. "
+                         "Tagging an entry with a tag of that none name says nobody "
+                         "asked, even on a project with a usual requester."},
 }
 
 

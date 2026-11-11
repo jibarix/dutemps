@@ -113,7 +113,8 @@ def requester_map(profile):
     if not req:
         return None
     return {"tags": {r["tag"].casefold(): r["tag"] for r in req},
-            "defaults": {pj: r["tag"] for r in req for pj in r.get("projects") or []}}
+            "defaults": {pj: r["tag"] for r in req for pj in r.get("projects") or []},
+            "none": requester_labels(profile)[1].casefold()}
 
 
 def build(con, profile, number, issued, d_from, d_to, retainer=0.0,

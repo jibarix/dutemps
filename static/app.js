@@ -1626,7 +1626,7 @@ async function invoiceSettings(root) {
     h("h2", { class: "mt" }, "Credits and discounts"),
     credBox,
     h("h2", { class: "mt" }, "Requested by"),
-    h("p", { class: "muted", style: { maxWidth: "760px" } }, "Optional. Tag an entry with a requester’s tag to say who asked for it; untagged time goes to its project’s usual requester. With requesters, invoice lines are split by who asked, the detail gets a Requested by column and page one shows hours by requester."),
+    h("p", { class: "muted", style: { maxWidth: "760px" } }, "Optional. Tag an entry with a requester’s tag to say who asked for it; untagged time goes to its project’s usual requester. To say nobody asked, tag the entry with a tag named like the time nobody is named for (below). With requesters, invoice lines are split by who asked, the detail gets a Requested by column and page one shows hours by requester."),
     h("div", { class: "panel pad prof-form mt" }, h("div", { class: "row" },
       field(p.requester_labels, "heading", "Heading over who asked", { grow: true, placeholder: "Requested by" }),
       field(p.requester_labels, "none", "Time nobody is named for", { grow: true, placeholder: "Not specified" }))),
